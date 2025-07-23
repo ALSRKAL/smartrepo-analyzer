@@ -1,5 +1,6 @@
-![SmartRepo Banner](smartrepo-banner.png)
-<img width="932" height="1006" alt="image" src="https://github.com/user-attachments/assets/86d1598a-0371-4c92-8988-12c8d5f156c5" />
+![SmartRepo Banner](<img width="932" height="1006" alt="image" src="https://github.com/user-attachments/assets/db15c4cb-617f-420a-ac6d-c8937527ca4b" />
+)
+
 
 # SmartRepo Analyzer - Setup and Usage Guide
 
