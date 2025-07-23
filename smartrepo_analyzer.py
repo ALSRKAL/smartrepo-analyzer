@@ -19,6 +19,10 @@ import hashlib
 from rich.progress import Progress, TimeElapsedColumn, TimeRemainingColumn
 import time
 from rich.progress import Progress
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from rich import box
 
 # Core dependencies (install with: pip install -r requirements.txt)
 try:
@@ -1338,9 +1342,37 @@ class SmartRepoAnalyzer:
 
     def __init__(self):
         self.version = "1.0.0"
+        self.console = Console()
+
+    def print_logo(self):
+        logo = """
+[bold blue]
+   ⚡️🤖📊
+███████╗ ███╗   ███╗ █████╗ ██████╗ ██████╗ ██████╗  ██████╗
+██╔════╝ ████╗ ████║██╔══██╗██╔══██╗██╔══██╗██╔══██╗██╔═══██╗
+███████╗ ██╔████╔██║███████║██████╔╝██████╔╝██║   ██║██████╔╝
+╚════██║ ██║╚██╔╝██║██╔══██║██╔═══╝ ██╔══██╗██║   ██║██╔══██╗
+███████║ ██║ ╚═╝ ██║██║  ██║██║     ██║  ██║╚██████╔╝██║  ██║
+╚══════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝
+[/bold blue]
+"""
+        byline = Text("by alsrkal", style="bold magenta")
+        byline.stylize("bold magenta", 0, 2)
+        byline.stylize("bold yellow", 3, 6)
+        byline.stylize("bold cyan", 6, 9)
+        panel = Panel.fit(
+            f"🚀\n{logo}\n{byline}\n🤖 [bold green]AI-Powered Code Analysis[/bold green] ⚡️\n🚀",
+            title="[bold yellow]Welcome to SmartRepo[/bold yellow]",
+            subtitle="[bold blue]Your AI Assistant for Code Intelligence[/bold blue]",
+            border_style="bold magenta",
+            padding=(1, 6),
+            style="on black",
+            box=box.DOUBLE
+        )
+        self.console.print(panel, justify="center")
 
     def run(self, project_path: str, output_dir: Optional[str] = None, enable_complexity: bool = False):
-        """Run the complete analysis pipeline"""
+        self.print_logo()
         print(f"🚀 SmartRepo Analyzer v{self.version}")
         print(f"📁 Analyzing project: {project_path}")
         project_path = Path(project_path).resolve()

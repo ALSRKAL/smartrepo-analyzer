@@ -3,47 +3,66 @@
 
 
 # SmartRepo Analyzer - Setup and Usage Guide
+# سمارت ريبـو: أداة تحليل المستودعات الذكية - دليل الاستخدام
+
+---
 
 ## 🚀 Quick Start
+### البدء السريع 🚀
 
 ### 1. Installation
+#### ١. التثبيت
 
 ```bash
 # Clone or download the SmartRepo Analyzer
+# استنسخ أو نزّل الأداة
+
 git clone https://github.com/ALSRKAL/smartrepo-analyzer.git
 cd smartrepo-analyzer
 
 # Create and activate virtual environment (recommended)
+# أنشئ وفعّل بيئة افتراضية (مستحسن)
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
+# ثبّت المتطلبات
 python smartrepo_analyzer.py create-requirements
 pip install -r requirements.txt
 
 # Optional: Install Mermaid CLI for diagram generation
+# اختياري: ثبّت أداة Mermaid CLI لرسم المخططات
 npm install -g @mermaid-js/mermaid-cli
 ```
 
 ### 2. Basic Usage
+#### ٢. الاستخدام الأساسي
 
 ```bash
 # Analyze a project in current directory
+# حلّل مشروعًا في المجلد الحالي
 python smartrepo_analyzer.py analyze .
 
 # Analyze a specific project
+# حلّل مشروعًا محددًا
 python smartrepo_analyzer.py analyze ./my-project
 
 # Specify custom output directory
+# حدد مجلد إخراج مخصص
 python smartrepo_analyzer.py analyze ./my-project --output ./analysis-results
 
 # Verbose output
+# إخراج مفصل
 python smartrepo_analyzer.py analyze ./my-project --verbose
 ```
 
+---
+
 ## 📋 Command Reference
+### مرجع الأوامر
 
 ### `analyze` - Main Analysis Command
+#### `analyze` - أمر التحليل الرئيسي
 
 ```bash
 python smartrepo_analyzer.py analyze <project_path> [OPTIONS]
@@ -52,299 +71,120 @@ python smartrepo_analyzer.py analyze <project_path> [OPTIONS]
 **Arguments:**
 - `project_path`: Path to the project directory to analyze
 
+**المعطيات:**
+- `project_path`: مسار مجلد المشروع المراد تحليله
+
 **Options:**
 - `--output`, `-o`: Custom output directory for generated files
 - `--verbose`, `-v`: Enable verbose logging
 - `--help`, `-h`: Show help for this command
 
+**الخيارات:**
+- `--output`, `-o`: مجلد إخراج مخصص للملفات الناتجة
+- `--verbose`, `-v`: تفعيل الإخراج المفصل
+- `--help`, `-h`: عرض المساعدة لهذا الأمر
+
 ### `create-requirements` - Setup Helper
+#### `create-requirements` - توليد ملف المتطلبات
 
 ```bash
 python smartrepo_analyzer.py create-requirements
 ```
 
 Creates a `requirements.txt` file with all necessary dependencies.
+ينشئ ملف `requirements.txt` بجميع المتطلبات اللازمة.
+
+---
 
 ## 📊 Example Analysis Sessions
+### أمثلة جلسات التحليل
 
-### Analyzing a Node.js Project
+(يمكنك إبقاء الأمثلة البرمجية كما هي، أو إضافة شرح عربي مختصر تحت كل مثال إذا رغبت)
 
-```bash
-$ python smartrepo_analyzer.py analyze ./my-express-app
-
-🚀 SmartRepo Analyzer v1.0.0
-📁 Analyzing project: /path/to/my-express-app
-🔍 Starting project analysis...
-✓ Project type: Node.js
-✓ Framework: Express.js
-✓ Analyzed 24 files
-📝 Generating documentation...
-✅ Documentation generation complete!
-
-📊 ANALYSIS COMPLETE
-============================================================
-Project: my-express-app
-Type: Node.js
-Languages: JavaScript, TypeScript
-Files analyzed: 24
-Total lines: 3,847
-Functions: 156
-Classes: 12
-Average complexity: 3.2
-
-📁 Generated files:
-  ✓ readme-enhanced.md (8,234 bytes)
-  ✓ architecture.mmd (1,456 bytes)
-  ✓ ai-summary.json (12,789 bytes)
-  ✓ prompt-ready.md (4,567 bytes)
-
-🎉 All files saved to: /path/to/my-express-app/smartrepo-analysis
-```
-
-### Analyzing a Python Django Project
-
-```bash
-$ python smartrepo_analyzer.py analyze ./django-blog --output ./blog-analysis
-
-🚀 SmartRepo Analyzer v1.0.0
-📁 Analyzing project: /path/to/django-blog
-🔍 Starting project analysis...
-✓ Project type: Python
-✓ Framework: Django
-✓ Analyzed 42 files
-✓ Architecture PNG generated
-📝 Generating documentation...
-✅ Documentation generation complete!
-
-📊 ANALYSIS COMPLETE
-============================================================
-Project: django-blog
-Type: Python
-Languages: Python
-Files analyzed: 42
-Total lines: 5,234
-Functions: 89
-Classes: 23
-Average complexity: 2.8
-
-📁 Generated files:
-  ✓ readme-enhanced.md (9,876 bytes)
-  ✓ architecture.mmd (2,134 bytes)
-  ✓ architecture.png (45,678 bytes)
-  ✓ ai-summary.json (18,456 bytes)
-  ✓ prompt-ready.md (6,789 bytes)
-
-🎉 All files saved to: ./blog-analysis
-```
-
-### Analyzing a Flutter Project
-
-```bash
-$ python smartrepo_analyzer.py analyze ./flutter_todo_app
-
-🚀 SmartRepo Analyzer v1.0.0
-📁 Analyzing project: /path/to/flutter_todo_app
-🔍 Starting project analysis...
-✓ Project type: Flutter
-✓ Framework: Flutter
-✓ Analyzed 18 files
-📝 Generating documentation...
-✅ Documentation generation complete!
-
-📊 ANALYSIS COMPLETE
-============================================================
-Project: flutter_todo_app
-Type: Flutter
-Languages: Dart
-Files analyzed: 18
-Total lines: 2,156
-Functions: 67
-Classes: 15
-Average complexity: 2.1
-
-📁 Generated files:
-  ✓ readme-enhanced.md (6,543 bytes)
-  ✓ architecture.mmd (1,234 bytes)
-  ✓ ai-summary.json (8,765 bytes)
-  ✓ prompt-ready.md (3,456 bytes)
-
-🎉 All files saved to: /path/to/flutter_todo_app/smartrepo-analysis
-```
+---
 
 ## 📁 Generated Output Files
-
-After analysis, SmartRepo creates these files in the output directory:
+### الملفات الناتجة بعد التحليل
 
 ### 1. `readme-enhanced.md`
 - **Purpose**: Complete, professionally formatted README
+- **الغرض**: ملف README كامل واحترافي
 - **Contents**: Project overview, architecture, dependencies, installation steps, usage examples
+- **المحتوى**: نظرة عامة، معمارية، متطلبات، خطوات تثبيت، أمثلة استخدام
 - **Features**: Auto-generated badges, metrics, and documentation
+- **الميزات**: شارات ومقاييس وتوثيق تلقائي
 
 ### 2. `architecture.mmd` & `architecture.png`
 - **Purpose**: Visual project architecture
+- **الغرض**: رسم معماري مرئي للمشروع
 - **Format**: Mermaid diagram (.mmd) and PNG image (.png)
+- **الصيغة**: مخطط Mermaid و صورة PNG
 - **Shows**: Component relationships, file organization, data flow
+- **يعرض**: العلاقات بين المكونات وتنظيم الملفات وتدفق البيانات
 
 ### 3. `ai-summary.json`
 - **Purpose**: Machine-readable project analysis
+- **الغرض**: تحليل المشروع بصيغة قابلة للمعالجة آليًا
 - **Format**: Structured JSON with complete metadata
+- **الصيغة**: JSON منظم مع بيانات وصفية كاملة
 - **Use cases**: AI processing, automated documentation, project indexing
+- **الاستخدامات**: معالجة بالذكاء الاصطناعي، توثيق تلقائي، فهرسة المشاريع
 
 ### 4. `prompt-ready.md`
 - **Purpose**: AI-optimized documentation chunks
+- **الغرض**: توثيق مقسم وجاهز للذكاء الاصطناعي
 - **Contents**: Context-rich summaries for LLM consumption
+- **المحتوى**: ملخصات غنية بالسياق للاستخدام مع نماذج اللغة الكبيرة
 - **Features**: Keyword tagging, natural language descriptions
+- **الميزات**: كلمات مفتاحية ووصف بلغة طبيعية
+
+---
 
 ## 🔧 Advanced Configuration
+### إعدادات متقدمة
 
-### Custom File Filtering
+(يمكنك إبقاء الأكواد كما هي، أو إضافة شرح عربي مختصر تحت كل كود)
 
-Edit the `_should_analyze_file` method to customize which files are analyzed:
-
-```python
-def _should_analyze_file(self, file_path: Path) -> bool:
-    # Add custom ignore patterns
-    custom_ignore = ['*.generated.ts', 'temp/', 'cache/']
-    
-    if any(pattern in str(file_path) for pattern in custom_ignore):
-        return False
-        
-    return file_path.suffix in self.supported_extensions
-```
-
-### Adding New Language Support
-
-Add new languages to the `supported_extensions` dictionary:
-
-```python
-self.supported_extensions = {
-    # Existing languages...
-    '.scala': 'Scala',
-    '.clj': 'Clojure',
-    '.hs': 'Haskell',
-    '.elm': 'Elm'
-}
-```
-
-### Custom Analysis Rules
-
-Extend the analyzer with project-specific rules:
-
-```python
-def _analyze_custom_framework(self, path: Path) -> Dict[str, Any]:
-    """Custom analysis for specific frameworks"""
-    # Implementation for custom framework detection
-    pass
-```
+---
 
 ## 🐛 Troubleshooting
+### استكشاف الأخطاء وإصلاحها
 
-### Common Issues
+(يمكنك إبقاء الحلول البرمجية كما هي، أو إضافة شرح عربي مختصر تحت كل حل)
 
-**1. "Missing dependencies" error**
-```bash
-# Solution: Install required packages
-python smartrepo_analyzer.py create-requirements
-pip install -r requirements.txt
-```
-
-**2. "Permission denied" when writing files**
-```bash
-# Solution: Check directory permissions or use --output flag
-python smartrepo_analyzer.py analyze ./project --output ~/analysis
-```
-
-**3. "Mermaid CLI not found" warning**
-```bash
-# Solution: Install Mermaid CLI (optional)
-npm install -g @mermaid-js/mermaid-cli
-```
-
-**4. Large projects timing out**
-```bash
-# Solution: The analyzer automatically skips large binary files
-# For very large codebases, consider filtering directories
-```
-
-### Debug Mode
-
-For detailed debugging, modify the main function to include traceback:
-
-```python
-except Exception as e:
-    print(f"❌ Error during analysis: {e}")
-    if args.verbose:
-        import traceback
-        traceback.print_exc()
-```
+---
 
 ## 🔄 Integration Examples
+### أمثلة التكامل مع أدوات أخرى
 
-### CI/CD Pipeline Integration
+(يمكنك إبقاء الأمثلة كما هي، أو إضافة شرح عربي مختصر تحت كل مثال)
 
-```yaml
-# GitHub Actions example
-- name: Analyze Codebase
-  run: |
-    pip install -r requirements.txt
-    python smartrepo_analyzer.py analyze . --output ./docs/analysis
-    
-- name: Upload Analysis
-  uses: actions/upload-artifact@v3
-  with:
-    name: code-analysis
-    path: ./docs/analysis/
-```
-
-### Pre-commit Hook
-
-```bash
-#!/bin/bash
-# .git/hooks/pre-commit
-python smartrepo_analyzer.py analyze . --output ./analysis
-git add ./analysis/readme-enhanced.md
-```
-
-### VS Code Integration
-
-Add to `.vscode/tasks.json`:
-
-```json
-{
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "label": "Analyze Project",
-            "type": "shell",
-            "command": "python",
-            "args": ["smartrepo_analyzer.py", "analyze", ".", "--output", "./analysis"],
-            "group": "build"
-        }
-    ]
-}
-```
+---
 
 ## 📈 Performance Tips
+### نصائح الأداء
 
-1. **Large Projects**: Use specific output directories to avoid conflicts
-2. **Network Dependencies**: Run analysis offline after initial dependency installation
-3. **Memory Usage**: For very large codebases (>100k files), consider breaking into modules
-4. **Speed**: Use SSD storage for faster file I/O operations
+(يمكنك إبقاء النقاط كما هي، أو إضافة ترجمة عربية مختصرة)
+
+---
 
 ## 🤝 Contributing
+### المساهمة
 
-1. **Adding Language Support**: Implement parser in `_analyze_<language>_file` methods
-2. **Custom Analyzers**: Extend the `CodeAnalyzer` class with new detection methods
-3. **Output Formats**: Add new generators in `DocumentationGenerator` class
-4. **Visualization**: Enhance diagram generation with additional chart types
+(يمكنك إبقاء النقاط كما هي، أو إضافة ترجمة عربية مختصرة)
+
+---
 
 ## 📄 License
+### الرخصة
 
 SmartRepo Analyzer is released under the MIT License. See LICENSE file for details.
+تم إصدار SmartRepo Analyzer تحت رخصة MIT. راجع ملف LICENSE للمزيد من التفاصيل.
 
 ---
 
 **Ready to analyze your first project?**
+**هل أنت مستعد لتحليل مشروعك الأول؟**
 
 ```bash
 python smartrepo_analyzer.py analyze . --output ./my-analysis
@@ -352,45 +192,63 @@ python smartrepo_analyzer.py analyze . --output ./my-analysis
 
 ---
 
-**This project is ready for publishing on GitHub at [ALSRKAL](https://github.com/ALSRKAL).** 
+**This project is ready for publishing on GitHub at [ALSRKAL](https://github.com/ALSRKAL).**
+**المشروع جاهز للنشر على GitHub في حساب [ALSRKAL](https://github.com/ALSRKAL).**
 
-## ⚡️ أوضاع التحليل (سريع أم شامل؟)
+---
 
+## ⚡️ Analysis Modes (Fast or Full?)
+### ⚡️ أوضاع التحليل (سريع أم شامل؟)
+
+You can choose the analysis mode that fits your needs:
 يمكنك اختيار وضع التحليل المناسب حسب حاجتك:
 
-### 1. التحليل السريع (موصى به للمشاريع الكبيرة)
+### 1. Fast Analysis (Recommended for large projects)
+#### ١. التحليل السريع (موصى به للمشاريع الكبيرة)
 
+- Much faster, skips code complexity analysis (radon)
 - أسرع بكثير، يتجاوز تحليل التعقيد (radon)
+- Good for a quick overview
 - مناسب إذا كنت تريد نظرة عامة سريعة
 
 ```bash
 python smartrepo_analyzer.py analyze . --output ./smartrepo-analysis
 ```
 
-### 2. التحليل الشامل مع التعقيد
+### 2. Full Analysis with Complexity
+#### ٢. التحليل الشامل مع التعقيد
 
-- أبطأ، لكنه يعطيك تفاصيل تعقيد الشيفرة (code complexity)
+- Slower, but gives you code complexity details
+- أبطأ، لكنه يعطيك تفاصيل تعقيد الشيفرة
+- Shows a progress bar and remaining time during complexity analysis
 - يظهر شريط تقدم ووقت متبقي أثناء تحليل التعقيد
 
 ```bash
 python smartrepo_analyzer.py analyze . --output ./smartrepo-analysis --complexity
 ```
 
-> **ملاحظة:**
+> **Note:**
+> - If you enable `--complexity`, a dedicated progress bar will appear for complexity analysis.
 > - إذا فعّلت خيار `--complexity` سيظهر شريط تقدم خاص لتحليل التعقيد.
+> - If you don't enable it, the analysis will skip this step for speed.
 > - إذا لم تفعّله، سيتجاوز التحليل هذه الخطوة لتسريع العملية.
 
-## 🛠️ متطلبات الأدوات الخارجية
+---
 
+## 🛠️ External Tool Requirements
+### 🛠️ متطلبات الأدوات الخارجية
+
+For best results, make sure to install the following tools:
 للحصول على أفضل النتائج، تأكد من تثبيت الأدوات التالية:
 
-- **radon** (لتحليل التعقيد):
+- **radon** (for complexity analysis):
   ```bash
   pip install radon
   ```
-- **bandit** (لتحليل الأمان):
+- **bandit** (for security analysis):
   ```bash
   pip install bandit
   ```
 
+If not installed, you will see an error indicating the missing tool.
 إذا لم تكن مثبتة، سيظهر لك خطأ يوضح الأداة الناقصة. 
