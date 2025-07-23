@@ -1,0 +1,9 @@
+# SmartRepo Analyzer Requirements
+
+pyyaml>=6.0
+toml>=0.10.2
+pygments>=2.10.0
+requests>=2.25.0
+click>=8.0.0
+pathlib2>=2.3.6
+dataclasses>=0.6; python_version<"3.7"
