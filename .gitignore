@@ -74,3 +74,5 @@ coverage.xml
 
 # Output analysis
 smartrepo-analysis/ 
+# Allow SmartRepo screenshot
+!image/smartrepo-terminal-screenshot.png

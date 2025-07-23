@@ -1,14 +1,12 @@
-<img width="932" height="1006" alt="image" src="https://github.com/user-attachments/assets/02352890-9599-404f-970a-23b7ccfe28d9" />
-
-
-
 # SmartRepo Analyzer - Setup and Usage Guide
 # سمارت ريبـو: أداة تحليل المستودعات الذكية - دليل الاستخدام
 
 ---
 
-## 🚀 Quick Start
-### البدء السريع 🚀
+![SmartRepo Terminal Screenshot](image/smartrepo-terminal-screenshot.png)
+
+*Terminal welcome screen and analysis progress*
+*شاشة الترحيب في الطرفية وتقدم التحليل*
 
 ### 1. Installation
 #### ١. التثبيت
