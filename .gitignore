@@ -1,78 +1,17 @@
-# Byte-compiled / optimized / DLL files
+# إضافة استثناءات لملفات pycache وملفات التغليف
 __pycache__/
-*.py[cod]
-*$py.class
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-env/
-build/
-develop-eggs/
+*.pyc
+*.pyo
+*.pyd
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# PyInstaller
-*.manifest
+build/
 *.spec
-
-# Installer logs
-debug.log
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# mypy
-.mypy_cache/
-.dmypy.json
-
-# VS Code
-.vscode/
-
-# Mac
-.DS_Store
-
-# Mermaid diagrams
-*.mmd
-*.png
-
-# Output analysis
-smartrepo-analysis/ 
-# Allow SmartRepo screenshot
-!image/smartrepo-terminal-screenshot.png
+*.exe
+*.app
+*.dmg
+*.deb
+*.rpm
+*.egg-info/
+# استثناء ملفات النتائج المؤقتة
+*.log
+*.tmp
