@@ -1,57 +1,142 @@
-
 #!/usr/bin/env python3
 """
-SmartRepo Analyzer - AI-Powered Code Analysis and Documentation Tool
-A comprehensive tool for analyzing codebases and generating AI-optimized documentation.
+SmartRepo Analyzer — AI-Powered Code Analysis & Documentation Tool
+
+A comprehensive, fast, bilingual tool that scans a codebase, extracts deep
+metrics (structure, dependencies, complexity, security, coverage) and
+generates AI-ready documentation: enhanced README, Mermaid diagrams,
+JSON summaries, prompt-ready context and an interactive HTML report.
+
+SmartRepo Analyzer — أداة تحليل أكواد ذكية ثنائية اللغة تفحص المشروع،
+تستخرج مقاييس معمّقة (بنية، تبعيات، تعقيد، أمان، تغطية) وتولّد توثيقًا
+جاهزًا للذكاء الاصطناعي: README محسّن، مخططات Mermaid، ملخصات JSON،
+سياق جاهز للنماذج اللغوية، وتقرير HTML تفاعلي.
 """
 
-import os
-import json
-import ast
-import re
+from __future__ import annotations
+
 import argparse
+import ast
+import fnmatch
+import json
+import os
+import re
 import subprocess
-from pathlib import Path
-from typing import Dict, List, Any, Optional, Set
-from dataclasses import dataclass, asdict
-from collections import defaultdict
-import hashlib
-from rich.progress import Progress, TimeElapsedColumn, TimeRemainingColumn
+import sys
 import time
-from rich.progress import Progress
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
-from rich.text import Text
-from rich import box
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
+from rich.table import Table
 
-# Core dependencies (install with: pip install -r requirements.txt)
+# Core dependencies
 try:
-    import yaml
-    import toml
+    import yaml  # noqa: F401  (used by downstream generators)
+    import toml  # noqa: F401
     from pygments.lexers import get_lexer_for_filename
     from pygments.util import ClassNotFound
 except ImportError:
-    print("Missing dependencies. Install with: pip install pyyaml toml pygments")
-    exit(1)
-# === دعم التغطية و linting ===
-from coverage_support import parse_coverage_xml, get_overall_coverage
+    print("Missing dependencies. Install with: pip install rich pygments pyyaml toml")
+    sys.exit(1)
+
+# --- internal support modules -------------------------------------------
+from ai_summarization_support import ai_summarize_code
+from callgraph_support import extract_call_graph, find_cycles, save_call_graph_mermaid
+from complexity_support import (
+    analyze_complexity_with_radon,
+    analyze_maintainability_with_radon,
+)
+from coverage_support import get_overall_coverage, parse_coverage_xml
+from framework_detection_support import detect_frameworks
+from git_support import get_contributors, get_git_stats
 from linting_support import run_pylint_on_files
 from monorepo_support import find_subprojects
+from multi_lint_support import run_eslint_on_files, run_flake8_on_files
+from recommendation_support import generate_recommendations
+from security_support import analyze_security_with_bandit
+from summarization_support import summarize_file
+from tool_runner import tool_available
 from uml_support import generate_mermaid_class_diagram
 from usage_example_support import extract_usage_examples
-from summarization_support import summarize_file
-from callgraph_support import extract_call_graph, save_call_graph_mermaid, find_cycles
-from framework_detection_support import detect_frameworks
-from git_support import get_contributors
-from multi_lint_support import run_flake8_on_files, run_eslint_on_files
-from recommendation_support import generate_recommendations
-from complexity_support import analyze_complexity_with_radon, analyze_maintainability_with_radon
-from security_support import analyze_security_with_bandit
-from ai_summarization_support import ai_summarize_code
+
+__version__ = "2.0.0"
+ANALYZER_VERSION = __version__
+
+console = Console()
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+SUPPORTED_EXTENSIONS: Dict[str, str] = {
+    ".py": "Python",
+    ".js": "JavaScript",
+    ".mjs": "JavaScript",
+    ".cjs": "JavaScript",
+    ".ts": "TypeScript",
+    ".jsx": "React JSX",
+    ".tsx": "React TSX",
+    ".dart": "Dart",
+    ".rs": "Rust",
+    ".go": "Go",
+    ".java": "Java",
+    ".kt": "Kotlin",
+    ".swift": "Swift",
+    ".php": "PHP",
+    ".rb": "Ruby",
+    ".scala": "Scala",
+    ".c": "C",
+    ".h": "C Header",
+    ".cpp": "C++",
+    ".cc": "C++",
+    ".hpp": "C++ Header",
+    ".cs": "C#",
+}
+
+IGNORED_DIRS: Set[str] = {
+    "node_modules", "__pycache__", ".git", ".hg", ".svn", "venv", ".venv",
+    "env", ".env", "virtualenv", "dist", "build", "target", "out",
+    ".next", ".nuxt", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
+    ".idea", ".vscode", "site-packages", ".eggs", "*.egg-info",
+    "coverage", "htmlcov", "vendor", "bower_components",
+    "smartrepo-analysis", ".jython_cache", "__macosx",
+}
+
+MAX_FILE_SIZE_BYTES = 1_500_000  # skip giant generated/binary-ish sources
+
+
+def utc_now_iso() -> str:
+    """Current UTC timestamp in ISO-8601."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _match_any(name: str, patterns: List[str]) -> bool:
+    return any(fnmatch.fnmatch(name.lower(), pat.lower()) for pat in patterns)
+
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
 
 @dataclass
 class FileInfo:
-    """Information about a single file in the project"""
+    """Information about a single analyzed source file."""
+
     path: str
     language: str
     size: int
@@ -61,10 +146,14 @@ class FileInfo:
     imports: List[str]
     complexity_score: int
     summary: str
+    code_lines: int = 0
+    docstring: str = ""
+
 
 @dataclass
 class ProjectStructure:
-    """Complete project analysis structure"""
+    """Complete result of analyzing one project."""
+
     name: str
     type: str
     languages: List[str]
@@ -73,648 +162,926 @@ class ProjectStructure:
     files: List[FileInfo]
     architecture: Dict[str, List[str]]
     metrics: Dict[str, Any]
-    file_dependency_graph: Optional[Dict[str, List[str]]] = None  # NEW: العلاقات بين الملفات
-    coverage: Optional[dict] = None  # NEW: نتائج التغطية
+    framework: Optional[str] = None
+    package_managers: List[str] = field(default_factory=list)
+    file_dependency_graph: Optional[Dict[str, List[str]]] = None
+    coverage: Optional[dict] = None
     overall_coverage: Optional[float] = None
-    linting: Optional[list] = None   # NEW: نتائج linting
+    linting: Optional[list] = None
     call_graph_cycles: Optional[List[List[str]]] = None
     detected_frameworks: Optional[List[str]] = None
     contributors: Optional[List[Dict[str, Any]]] = None
+    git_stats: Optional[Dict[str, Any]] = None
     flake8: Optional[List[Dict[str, Any]]] = None
     eslint: Optional[List[Dict[str, Any]]] = None
     complexity: Optional[Dict[str, Any]] = None
     maintainability: Optional[Dict[str, Any]] = None
     security: Optional[Dict[str, Any]] = None
     ai_summaries: Optional[Dict[str, str]] = None
+    health: Optional[Dict[str, Any]] = None
+    generated_at: str = field(default_factory=utc_now_iso)
+
+
+# ---------------------------------------------------------------------------
+# Health score
+# ---------------------------------------------------------------------------
+
+
+def compute_health_score(
+    metrics: Dict[str, Any],
+    test_ratio: float,
+    lint_issue_count: int = 0,
+    security_counts: Optional[Dict[str, int]] = None,
+    overall_coverage: Optional[float] = None,
+    avg_maintainability: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Compute an overall project health score (0-100) plus letter grade.
+
+    يحسب درجة صحة المشروع الإجمالية من 100 مع تقدير حرفي، بناءً على
+    التعقيد، التغطية الاختبارية، مشاكل الفحص الثابت، والأمان.
+    """
+    score = 100.0
+    breakdown: Dict[str, str] = {}
+
+    avg_complexity = float(metrics.get("average_complexity") or 0)
+
+    if avg_complexity > 12:
+        penalty = min(25, (avg_complexity - 12) * 2.5)
+        score -= penalty
+        breakdown["complexity"] = f"very high ({avg_complexity:.1f}) −{penalty:.0f}"
+    elif avg_complexity > 6:
+        penalty = (avg_complexity - 6) * 2.5
+        score -= penalty
+        breakdown["complexity"] = f"high ({avg_complexity:.1f}) −{penalty:.0f}"
+    else:
+        breakdown["complexity"] = f"ok ({avg_complexity:.1f})"
+
+    if test_ratio >= 0.20:
+        breakdown["tests"] = f"good ratio ({test_ratio:.0%})"
+        score += 3
+    elif test_ratio >= 0.10:
+        breakdown["tests"] = f"fair ratio ({test_ratio:.0%})"
+    elif test_ratio > 0:
+        score -= 10
+        breakdown["tests"] = f"low ratio ({test_ratio:.0%}) −10"
+    else:
+        score -= 18
+        breakdown["tests"] = "no tests found −18"
+
+    total_files = max(metrics.get("total_files", 1), 1)
+    density = lint_issue_count / total_files
+    if density > 10:
+        score -= 15
+        breakdown["linting"] = f"{density:.0f} issues/file −15"
+    elif density > 4:
+        score -= 7
+        breakdown["linting"] = f"{density:.0f} issues/file −7"
+    elif density > 0:
+        score -= 3
+        breakdown["linting"] = f"{density:.0f} issues/file −3"
+    else:
+        breakdown["linting"] = "clean"
+
+    sec_counts = security_counts or {}
+    high = sec_counts.get("HIGH", 0)
+    med = sec_counts.get("MEDIUM", 0)
+    if high:
+        pen = min(25, high * 6)
+        score -= pen
+        breakdown["security"] = f"{high} high-severity issues −{pen}"
+    elif med:
+        pen = min(10, med * 2)
+        score -= pen
+        breakdown["security"] = f"{med} medium issues −{pen}"
+    else:
+        breakdown["security"] = "no known issues"
+
+    if overall_coverage is not None:
+        if overall_coverage >= 80:
+            breakdown["coverage"] = f"{overall_coverage:.0f}% strong"
+            score += 5
+        elif overall_coverage >= 50:
+            breakdown["coverage"] = f"{overall_coverage:.0f}% moderate"
+        else:
+            pen = min(12, (50 - overall_coverage) / 4)
+            score -= pen
+            breakdown["coverage"] = f"{overall_coverage:.0f}% low −{pen:.0f}"
+
+    if avg_maintainability is not None and avg_maintainability < 40:
+        score -= 8
+        breakdown["maintainability"] = f"MI {avg_maintainability:.0f} low −8"
+
+    score = max(0.0, min(100.0, score))
+    if score >= 90:
+        grade = "A+"
+    elif score >= 80:
+        grade = "A"
+    elif score >= 70:
+        grade = "B"
+    elif score >= 55:
+        grade = "C"
+    elif score >= 40:
+        grade = "D"
+    else:
+        grade = "F"
+
+    return {
+        "score": round(score),
+        "grade": grade,
+        "breakdown": breakdown,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Core analyzer
+# ---------------------------------------------------------------------------
+
 
 class CodeAnalyzer:
-    """Core code analysis engine"""
+    """Core code-analysis engine (parallel, configurable, resilient)."""
 
-    def __init__(self, project_path: str):
-        self.project_path = Path(project_path)
-        self.project_structure = None
-        self.supported_extensions = {
-            '.py': 'Python',
-            '.js': 'JavaScript',
-            '.ts': 'TypeScript',
-            '.jsx': 'React',
-            '.tsx': 'React TypeScript',
-            '.dart': 'Dart',
-            '.rs': 'Rust',
-            '.go': 'Go',
-            '.java': 'Java',
-            '.cpp': 'C++',
-            '.c': 'C',
-            '.php': 'PHP',
-            '.rb': 'Ruby',
-            '.swift': 'Swift',
-            '.kt': 'Kotlin'
-        }
+    def __init__(
+        self,
+        project_path: str,
+        exclude_patterns: Optional[List[str]] = None,
+        include_patterns: Optional[List[str]] = None,
+        verbose: bool = False,
+        max_workers: Optional[int] = None,
+    ):
+        self.project_path = Path(project_path).resolve()
+        self.project_structure: Optional[ProjectStructure] = None
+        self.exclude_patterns = list(exclude_patterns or [])
+        self.include_patterns = list(include_patterns or [])
+        self.verbose = verbose
+        self.max_workers = max_workers or min(8, (os.cpu_count() or 2))
+
+    # ------------------------------------------------------------- logging
+    def _log(self, msg: str) -> None:
+        if self.verbose:
+            console.log(msg)
+
+    # ------------------------------------------------------------ scanning
+    def _iter_project_files(self) -> List[Path]:
+        """Collect candidate files while honoring ignores/excludes/includes.
+
+        يجمع الملفات المرشحة للتحليل متجاهلًا المجلدات المؤقتة والتبعيات،
+        مع دعم أنماط استبعاد/تضمين مخصصة من المستخدم.
+        """
+        results: List[Path] = []
+        root_str = str(self.project_path)
+        for dirpath, dirnames, filenames in os.walk(root_str):
+            rel_dir = os.path.relpath(dirpath, root_str)
+            # prune ignored directories early
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in IGNORED_DIRS
+                and not _match_any(d, ["*.egg-info"])
+                and not _match_any(d, self.exclude_patterns)
+                and not d.startswith(".")
+            ]
+            for fname in filenames:
+                ext = os.path.splitext(fname)[1].lower()
+                if ext not in SUPPORTED_EXTENSIONS:
+                    continue
+                rel_path = os.path.normpath(os.path.join(rel_dir, fname)) if rel_dir != "." else fname
+                if _match_any(rel_path, self.exclude_patterns):
+                    continue
+                if self.include_patterns and not (
+                    _match_any(rel_path, self.include_patterns)
+                    or _match_any(fname, self.include_patterns)
+                ):
+                    continue
+                full = Path(dirpath) / fname
+                try:
+                    if full.stat().st_size > MAX_FILE_SIZE_BYTES:
+                        self._log(f"Skipping oversized file: {rel_path}")
+                        continue
+                except OSError:
+                    continue
+                results.append(full)
+        return sorted(results)
 
     def detect_project_type(self) -> Dict[str, Any]:
-        """Auto-detect project type and main technologies"""
-        project_info = {
-            'type': 'Unknown',
-            'framework': None,
-            'languages': [],
-            'package_managers': [],
-            'entry_points': []
+        """Auto-detect project type, framework and entry points."""
+        info: Dict[str, Any] = {
+            "type": "Unknown",
+            "framework": None,
+            "languages": [],
+            "package_managers": [],
+            "entry_points": [],
         }
 
-        # Check for common config files
-        config_files = {
-            'package.json': self._analyze_package_json,
-            'requirements.txt': self._analyze_requirements,
-            'Pipfile': self._analyze_pipfile,
-            'pubspec.yaml': self._analyze_pubspec,
-            'Cargo.toml': self._analyze_cargo,
-            'go.mod': self._analyze_go_mod,
-            'pom.xml': self._analyze_maven,
-            'composer.json': self._analyze_composer
+        detectors: Dict[str, Any] = {
+            "package.json": self._analyze_package_json,
+            "pyproject.toml": self._analyze_pyproject,
+            "requirements.txt": self._analyze_requirements,
+            "Pipfile": self._analyze_pipfile,
+            "pubspec.yaml": self._analyze_pubspec,
+            "Cargo.toml": self._analyze_cargo,
+            "go.mod": self._analyze_go_mod,
+            "pom.xml": self._analyze_maven,
+            "build.gradle": self._analyze_gradle,
+            "composer.json": self._analyze_composer,
+            "Gemfile": self._analyze_ruby,
         }
-
-        for config_file, analyzer in config_files.items():
+        # order matters: most specific first
+        for config_file in [
+            "pubspec.yaml", "Cargo.toml", "go.mod", "pyproject.toml",
+            "requirements.txt", "Pipfile", "pom.xml", "build.gradle",
+            "composer.json", "Gemfile", "package.json",
+        ]:
             config_path = self.project_path / config_file
             if config_path.exists():
-                result = analyzer(config_path)
-                project_info.update(result)
+                result = detectors[config_file](config_path)
+                info.update({k: v for k, v in result.items() if v is not None})
                 break
 
-        # Fallback: analyze file extensions
-        if project_info['type'] == 'Unknown':
-            project_info.update(self._analyze_by_extensions())
+        if info["type"] == "Unknown":
+            info.update(self._analyze_by_extensions())
 
-        return project_info
+        return info
 
-    def _analyze_package_json(self, path: Path) -> Dict[str, Any]:
-        """Analyze Node.js package.json"""
+    # ----------------------------------------------------- config analyzers
+    def _read_json(self, path: Path) -> Optional[dict]:
         try:
-            with open(path) as f:
-                data = json.load(f)
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
 
-            project_type = 'Node.js'
-            framework = None
-            languages = ['JavaScript']
-
-            # Detect frameworks from dependencies
-            deps = {**data.get('dependencies', {}), **data.get('devDependencies', {})}
-
-            if any(key in deps for key in ['react', '@types/react']):
-                framework = 'React'
-                if '@types/react' in deps:
-                    languages.append('TypeScript')
-            elif 'vue' in deps:
-                framework = 'Vue.js'
-            elif 'angular' in deps or '@angular/core' in deps:
-                framework = 'Angular'
-                languages.append('TypeScript')
-            elif 'express' in deps:
-                framework = 'Express.js'
-            elif 'next' in deps:
-                framework = 'Next.js'
-
-            # Check for TypeScript
-            if 'typescript' in deps or any(f.suffix == '.ts' for f in self.project_path.rglob('*.ts')):
-                languages.append('TypeScript')
-
-            entry_points = []
-            if 'main' in data:
-                entry_points.append(data['main'])
-            if 'scripts' in data and 'start' in data['scripts']:
-                # Try to extract entry point from start script
-                start_script = data['scripts']['start']
-                if 'node' in start_script:
-                    parts = start_script.split()
-                    if len(parts) > 1:
-                        entry_points.append(parts[-1])
-
-            return {
-                'type': project_type,
-                'framework': framework,
-                'languages': languages,
-                'package_managers': ['npm'],
-                'entry_points': entry_points
-            }
+    def _analyze_pyproject(self, path: Path) -> Dict[str, Any]:
+        data = self._read_json(path.parent / "poetry.lock")  # poetry hint only
+        try:
+            with open(path, encoding="utf-8") as f:
+                content = toml.load(f)
         except Exception:
-            return {'type': 'Node.js', 'languages': ['JavaScript']}
+            content = {}
+        project_meta = content.get("project", {}) if isinstance(content, dict) else {}
+        poetry_meta = content.get("tool", {}).get("poetry", {}) if isinstance(content, dict) else {}
 
-    def _analyze_requirements(self, path: Path) -> Dict[str, Any]:
-        """Analyze Python requirements.txt"""
+        deps = set()
+        deps.update((project_meta.get("dependencies") or {}).keys())
+        deps.update((poetry_meta.get("dependencies") or {}).keys())
+        deps.discard("python")
+
+        framework = None
         frameworks = {
-            'django': 'Django',
-            'flask': 'Flask',
-            'fastapi': 'FastAPI',
-            'tornado': 'Tornado',
-            'streamlit': 'Streamlit'
+            "django": "Django", "flask": "Flask", "fastapi": "FastAPI",
+            "tornado": "Tornado", "streamlit": "Streamlit", "click": "Click",
+        }
+        for pkg, fw in frameworks.items():
+            if any(p.lower().startswith(pkg) for p in deps):
+                framework = fw
+                break
+
+        scripts = list((project_meta.get("scripts") or {}).keys()) if isinstance(project_meta.get("scripts"), dict) else []
+
+        return {
+            "type": "Python",
+            "framework": framework,
+            "languages": ["Python"],
+            "package_managers": ["pip", "poetry" if poetry_meta else "pip"],
+            "entry_points": self._find_python_entry_points() + [s for s in scripts if s != "_"],
         }
 
+    def _analyze_package_json(self, path: Path) -> Dict[str, Any]:
+        data = self._read_json(path) or {}
+        deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
+        dep_names = {k.split("/")[0] for k in deps}
+        languages = ["JavaScript"]
+
+        framework = None
+        checks = [
+            (("react",), "React"),
+            (("vue",), "Vue.js"),
+            (("@angular/core", "angular"), "Angular"),
+            (("express",), "Express.js"),
+            (("next",), "Next.js"),
+            (("nuxt",), "Nuxt"),
+            (("svelte",), "Svelte"),
+            (("electron",), "Electron"),
+        ]
+        for keys, name in checks:
+            if set(keys) & dep_names:
+                framework = name
+                break
+
+        if "typescript" in dep_names or any(
+            p.suffix == ".ts" for p in list(self.project_path.glob("*.ts"))[:5]
+        ):
+            languages.append("TypeScript")
+
+        entry_points: List[str] = []
+        if data.get("main"):
+            entry_points.append(data["main"])
+        start = (data.get("scripts") or {}).get("start", "")
+        m = re.search(r"(?:node|ts-node|tsx|bun|deno\s+run)\s+([\w./-]+)", start)
+        if m:
+            entry_points.append(m.group(1))
+
+        managers = ["npm"]
+        if (self.project_path / "yarn.lock").exists():
+            managers.append("yarn")
+        if (self.project_path / "pnpm-lock.yaml").exists():
+            managers.append("pnpm")
+
+        return {
+            "type": "Node.js",
+            "framework": framework,
+            "languages": languages,
+            "package_managers": managers,
+            "entry_points": entry_points,
+        }
+
+    def _analyze_requirements(self, path: Path) -> Dict[str, Any]:
+        frameworks = {
+            "django": "Django", "flask": "Flask", "fastapi": "FastAPI",
+            "tornado": "Tornado", "streamlit": "Streamlit",
+            "scipy": "Scientific/ML", "tensorflow": "TensorFlow",
+            "torch": "PyTorch", "scikit-learn": "Scikit-learn",
+        }
         try:
-            with open(path) as f:
-                content = f.read().lower()
-
-            detected_framework = None
-            for pkg, framework in frameworks.items():
-                if pkg in content:
-                    detected_framework = framework
-                    break
-
-            return {
-                'type': 'Python',
-                'framework': detected_framework,
-                'languages': ['Python'],
-                'package_managers': ['pip'],
-                'entry_points': self._find_python_entry_points()
-            }
-        except Exception:
-            return {'type': 'Python', 'languages': ['Python']}
+            content = path.read_text(encoding="utf-8", errors="replace").lower()
+        except OSError:
+            content = ""
+        detected = next((fw for pkg, fw in frameworks.items() if pkg in content), None)
+        return {
+            "type": "Python",
+            "framework": detected,
+            "languages": ["Python"],
+            "package_managers": ["pip"],
+            "entry_points": self._find_python_entry_points(),
+        }
 
     def _analyze_pipfile(self, path: Path) -> Dict[str, Any]:
-        """Analyze Python Pipfile"""
         return {
-            'type': 'Python',
-            'languages': ['Python'],
-            'package_managers': ['pipenv'],
-            'entry_points': self._find_python_entry_points()
+            "type": "Python",
+            "languages": ["Python"],
+            "package_managers": ["pipenv"],
+            "entry_points": self._find_python_entry_points(),
         }
 
     def _analyze_pubspec(self, path: Path) -> Dict[str, Any]:
-        """Analyze Flutter pubspec.yaml"""
         return {
-            'type': 'Flutter',
-            'framework': 'Flutter',
-            'languages': ['Dart'],
-            'package_managers': ['pub'],
-            'entry_points': ['lib/main.dart']
+            "type": "Flutter",
+            "framework": "Flutter",
+            "languages": ["Dart"],
+            "package_managers": ["pub"],
+            "entry_points": ["lib/main.dart"],
         }
 
     def _analyze_cargo(self, path: Path) -> Dict[str, Any]:
-        """Analyze Rust Cargo.toml"""
         return {
-            'type': 'Rust',
-            'languages': ['Rust'],
-            'package_managers': ['cargo'],
-            'entry_points': ['src/main.rs']
+            "type": "Rust",
+            "languages": ["Rust"],
+            "package_managers": ["cargo"],
+            "entry_points": ["src/main.rs"],
         }
 
     def _analyze_go_mod(self, path: Path) -> Dict[str, Any]:
-        """Analyze Go go.mod"""
         return {
-            'type': 'Go',
-            'languages': ['Go'],
-            'package_managers': ['go mod'],
-            'entry_points': ['main.go']
+            "type": "Go",
+            "languages": ["Go"],
+            "package_managers": ["go mod"],
+            "entry_points": ["main.go"],
         }
 
     def _analyze_maven(self, path: Path) -> Dict[str, Any]:
-        """Analyze Java Maven pom.xml"""
         return {
-            'type': 'Java',
-            'framework': 'Maven',
-            'languages': ['Java'],
-            'package_managers': ['maven'],
-            'entry_points': []
+            "type": "Java",
+            "framework": "Maven",
+            "languages": ["Java"],
+            "package_managers": ["maven"],
+            "entry_points": [],
+        }
+
+    def _analyze_gradle(self, path: Path) -> Dict[str, Any]:
+        return {
+            "type": "Java",
+            "framework": "Gradle",
+            "languages": ["Java", "Kotlin"],
+            "package_managers": ["gradle"],
+            "entry_points": [],
         }
 
     def _analyze_composer(self, path: Path) -> Dict[str, Any]:
-        """Analyze PHP composer.json"""
         return {
-            'type': 'PHP',
-            'languages': ['PHP'],
-            'package_managers': ['composer'],
-            'entry_points': ['index.php']
+            "type": "PHP",
+            "languages": ["PHP"],
+            "package_managers": ["composer"],
+            "entry_points": ["index.php"],
+        }
+
+    def _analyze_ruby(self, path: Path) -> Dict[str, Any]:
+        return {
+            "type": "Ruby",
+            "languages": ["Ruby"],
+            "package_managers": ["bundler"],
+            "entry_points": [],
         }
 
     def _analyze_by_extensions(self) -> Dict[str, Any]:
-        """Fallback analysis by file extensions"""
-        extension_count = defaultdict(int)
-
-        for file_path in self.project_path.rglob('*'):
-            if file_path.is_file() and file_path.suffix in self.supported_extensions:
-                extension_count[file_path.suffix] += 1
-
-        if not extension_count:
-            return {'type': 'Unknown', 'languages': []}
-
-        # Find most common language
-        primary_ext = max(extension_count.items(), key=lambda x: x[1])[0]
-        primary_lang = self.supported_extensions[primary_ext]
-
+        counts: Dict[str, int] = defaultdict(int)
+        for fp in self._iter_project_files():
+            counts[fp.suffix] += 1
+        if not counts:
+            return {"type": "Unknown", "languages": [], "entry_points": []}
+        primary_ext = max(counts.items(), key=lambda kv: kv[1])[0]
         return {
-            'type': primary_lang,
-            'languages': [self.supported_extensions[ext] for ext in extension_count.keys()],
-            'entry_points': []
+            "type": SUPPORTED_EXTENSIONS[primary_ext],
+            "languages": [SUPPORTED_EXTENSIONS[e] for e in counts],
+            "entry_points": [],
         }
 
     def _find_python_entry_points(self) -> List[str]:
-        """Find Python entry points"""
-        entry_points = []
-        common_names = ['main.py', 'app.py', 'run.py', 'server.py', 'manage.py']
+        names = ["main.py", "app.py", "run.py", "server.py", "manage.py", "cli.py"]
+        found = [n for n in names if (self.project_path / n).exists()]
+        src_main = self.project_path / "src" / "main.py"
+        if src_main.exists():
+            found.append(str(src_main.relative_to(self.project_path)))
+        return found
 
-        for name in common_names:
-            if (self.project_path / name).exists():
-                entry_points.append(name)
-
-        return entry_points
-
+    # -------------------------------------------------------- file analysis
     def analyze_file(self, file_path: Path) -> Optional[FileInfo]:
-        """Analyze a single file"""
+        """Analyze one source file; returns None on unreadable/binary files."""
         try:
-            if not file_path.is_file():
-                return None
-
-            # Get language
+            stat = file_path.stat()
+            raw = file_path.read_bytes()
             try:
-                lexer = get_lexer_for_filename(str(file_path))
-                language = lexer.name
-            except ClassNotFound:
-                ext = file_path.suffix
-                language = self.supported_extensions.get(ext, 'Unknown')
-
-            # Read file content
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                content = raw.decode("utf-8")
             except UnicodeDecodeError:
-                # Skip binary files
-                return None
+                content = raw.decode("latin-1")
+                if "\x00" in content[:4000]:  # binary heuristic
+                    return None
 
-            # Basic metrics
-            lines = len(content.splitlines())
-            size = len(content.encode('utf-8'))
+            ext = file_path.suffix.lower()
+            language = SUPPORTED_EXTENSIONS.get(ext)
+            if language is None:
+                try:
+                    language = get_lexer_for_filename(str(file_path)).name
+                except ClassNotFound:
+                    language = "Unknown"
 
-            # Language-specific analysis
-            functions = []
-            classes = []
-            imports = []
+            lines = content.count("\n") + (0 if content.endswith("\n") or not content else 1)
+            code_lines = sum(1 for ln in content.splitlines() if ln.strip())
+
+            functions: List[str] = []
+            classes: List[str] = []
+            imports: List[str] = []
+            docstring = ""
             complexity_score = 1
 
-            if language == 'Python':
-                result = self._analyze_python_file(content)
-                functions = result['functions']
-                classes = result['classes']
-                imports = result['imports']
-                complexity_score = result['complexity']
-            elif language in ['JavaScript', 'TypeScript']:
-                result = self._analyze_js_file(content)
-                functions = result['functions']
-                classes = result['classes']
-                imports = result['imports']
+            if language == "Python":
+                res = self._analyze_python_file(content)
+                functions, classes = res["functions"], res["classes"]
+                imports, complexity_score = res["imports"], res["complexity"]
+                docstring = res["docstring"]
+            elif language in ("JavaScript", "TypeScript"):
+                res = self._analyze_js_ts_file(content)
+                functions, classes, imports = res["functions"], res["classes"], res["imports"]
+                complexity_score += len(re.findall(r"\b(if|for|while)\s*\(", content)) // 4
 
-            # Generate summary
             summary = self._generate_file_summary(file_path, language, functions, classes)
 
             return FileInfo(
                 path=str(file_path.relative_to(self.project_path)),
                 language=language,
-                size=size,
+                size=stat.st_size,
                 lines=lines,
                 functions=functions,
                 classes=classes,
-                imports=imports,
+                imports=sorted(set(imports)),
                 complexity_score=complexity_score,
-                summary=summary
+                summary=summary,
+                code_lines=code_lines,
+                docstring=docstring[:300],
             )
-
-        except Exception as e:
-            print(f"Error analyzing {file_path}: {e}")
+        except Exception as e:  # never let one bad file kill the run
+            self._log(f"Error analyzing {file_path}: {e}")
             return None
 
     def _analyze_python_file(self, content: str) -> Dict[str, Any]:
-        """Analyze Python file using AST"""
+        """Deep AST analysis of Python source.
+
+        Cyclomatic complexity is computed per function without descending
+        into nested definitions, so nothing is ever counted twice.
+        """
         try:
             tree = ast.parse(content)
-
-            functions = []
-            classes = []
-            imports = []
-            complexity_score = 1
-
-            for node in ast.walk(tree):
-                if isinstance(node, ast.FunctionDef):
-                    functions.append(node.name)
-                    # Simple complexity: count nested structures
-                    complexity_score += sum(1 for _ in ast.walk(node) if isinstance(_, (ast.If, ast.For, ast.While)))
-                elif isinstance(node, ast.ClassDef):
-                    classes.append(node.name)
-                elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                    if isinstance(node, ast.Import):
-                        imports.extend([alias.name for alias in node.names])
-                    else:
-                        imports.append(node.module or '')
-
-            return {
-                'functions': functions,
-                'classes': classes,
-                'imports': list(set(imports)),
-                'complexity': complexity_score
-            }
         except SyntaxError:
-            return {'functions': [], 'classes': [], 'imports': [], 'complexity': 1}
+            return {"functions": [], "classes": [], "imports": [], "complexity": 1, "docstring": ""}
 
-    def _analyze_js_file(self, content: str) -> Dict[str, Any]:
-        """Basic JavaScript/TypeScript analysis using regex"""
-        # Simple regex-based analysis (for a production tool, use a proper parser)
+        functions: List[str] = []
+        classes: List[str] = []
+        imports: Set[str] = set()
+        docstring = ast.get_docstring(tree) or ""
 
-        # Function patterns
+        decision_nodes = (
+            ast.If, ast.For, ast.While, ast.ExceptHandler,
+            ast.Assert, ast.IfExp, ast.comprehension,
+        )
+
+        def local_complexity(func_node: ast.AST) -> int:
+            score = 1
+            stack = list(ast.iter_child_nodes(func_node))
+            while stack:
+                node = stack.pop()
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                    continue  # nested callables are scored on their own
+                if isinstance(node, decision_nodes):
+                    score += 1
+                elif isinstance(node, ast.BoolOp):
+                    score += max(len(node.values) - 1, 0)
+                stack.extend(ast.iter_child_nodes(node))
+            return score
+
+        total_decision_points = 0
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                prefix = "async " if isinstance(node, ast.AsyncFunctionDef) else ""
+                functions.append(prefix + node.name)
+                total_decision_points += local_complexity(node)
+            elif isinstance(node, ast.ClassDef):
+                classes.append(node.name)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.add(alias.name)
+                    imports.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    imports.add(node.module)
+                    imports.add(node.module.split(".")[0])
+
+        return {
+            "functions": functions,
+            "classes": classes,
+            "imports": sorted(imports),
+            "complexity": max(total_decision_points, 1),
+            "docstring": docstring,
+        }
+
+    def _analyze_js_ts_file(self, content: str) -> Dict[str, Any]:
+        """Regex-based JS/TS structural analysis."""
         func_patterns = [
-            r'function\s+(\w+)',
-            r'const\s+(\w+)\s*=\s*(?:async\s+)?\(',
-            r'let\s+(\w+)\s*=\s*(?:async\s+)?\(',
-            r'var\s+(\w+)\s*=\s*(?:async\s+)?\(',
-            r'(\w+):\s*(?:async\s+)?function',
-            r'(\w+)\s*=\s*(?:async\s+)?\('
+            r"function\s+(\w+)",
+            r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>",
+            r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?function\b",
+            r"(\w+)\s*:\s*(?:async\s+)?function\b",
+            r"class\s+(\w+)\s+extends",
         ]
-
-        functions = []
-        for pattern in func_patterns:
+        functions: List[str] = []
+        for pattern in func_patterns[:-1]:
             functions.extend(re.findall(pattern, content))
+        methods = re.findall(r"^\s{2,}(?:async\s+)?(\w+)\s*\([^)]*\)\s*\{", content, re.M)
+        functions.extend(m for m in methods if m not in ("if", "for", "while", "switch", "catch"))
 
-        # Class patterns
-        classes = re.findall(r'class\s+(\w+)', content)
-
-        # Import patterns
-        import_patterns = [
-            r'import.*from\s+[\'"]([^\'"]+)[\'"]',
-            r'import\s+[\'"]([^\'"]+)[\'"]',
-            r'require\([\'"]([^\'"]+)[\'"]\)'
-        ]
-
-        imports = []
-        for pattern in import_patterns:
+        classes = re.findall(r"\bclass\s+(\w+)", content)
+        imports: List[str] = []
+        for pattern in (
+            r"import[\s\S]*?from\s+['\"]([^'\"]+)['\"]",
+            r"import\s+['\"]([^'\"]+)['\"]",
+            r"require\(\s*['\"]([^'\"]+)['\"]\s*\)",
+            r"export\s+[\s\S]*?from\s+['\"]([^'\"]+)['\"]",
+        ):
             imports.extend(re.findall(pattern, content))
 
         return {
-            'functions': list(set(functions)),
-            'classes': list(set(classes)),
-            'imports': list(set(imports))
+            "functions": sorted(set(functions)),
+            "classes": sorted(set(classes)),
+            "imports": sorted(set(i.split("/")[0] for i in imports if i and not i.startswith("."))),
         }
 
-    def _generate_file_summary(self, file_path: Path, language: str, functions: List[str], classes: List[str]) -> str:
-        """Generate AI-friendly file summary"""
-        parts = []
-        parts.append(f"{language} file")
-
+    def _generate_file_summary(
+        self, file_path: Path, language: str, functions: List[str], classes: List[str]
+    ) -> str:
+        parts = [f"{language} module"]
         if classes:
-            parts.append(f"defines {len(classes)} class(es): {', '.join(classes[:3])}")
-
+            parts.append(f"defines class(es): {', '.join(classes[:3])}")
         if functions:
-            parts.append(f"contains {len(functions)} function(s): {', '.join(functions[:3])}")
-
-        # Infer purpose from filename and structure
+            parts.append(f"contains function(s): {', '.join(functions[:3])}")
         name = file_path.name.lower()
-        if 'test' in name:
-            parts.append("(testing module)")
-        elif 'util' in name or 'helper' in name:
-            parts.append("(utility module)")
-        elif 'config' in name:
-            parts.append("(configuration)")
-        elif 'model' in name:
-            parts.append("(data model)")
-        elif 'controller' in name or 'route' in name:
-            parts.append("(request handler)")
-        elif 'service' in name:
-            parts.append("(business logic)")
+        role_hints = [
+            ("test", "(testing module)"),
+            ("util", "(utility module)"),
+            ("helper", "(utility module)"),
+            ("config", "(configuration)"),
+            ("setting", "(configuration)"),
+            ("model", "(data model)"),
+            ("schema", "(data schema)"),
+            ("controller", "(request handler)"),
+            ("route", "(request handler)"),
+            ("service", "(business logic)"),
+            ("widget", "(UI component)"),
+            ("component", "(UI component)"),
+            ("view", "(UI component)"),
+        ]
+        for token, hint in role_hints:
+            if token in name:
+                parts.append(hint)
+                break
+        return " ".join(parts)
 
-        return ' '.join(parts)
+    # ------------------------------------------------------- project level
+    def analyze_project(
+        self,
+        ai_api_key: Optional[str] = None,
+        enable_complexity: bool = False,
+        run_linters: bool = True,
+    ) -> ProjectStructure:
+        """Run the complete analysis pipeline and return ProjectStructure."""
+        console.print("[bold cyan]🔍 Starting project analysis…[/]")
+        started = time.time()
 
-    def analyze_project(self, ai_api_key: str = None, enable_complexity: bool = False) -> ProjectStructure:
-        """Perform complete project analysis"""
-        print("🔍 Starting project analysis...")
-
-        # Detect project type
         project_info = self.detect_project_type()
-        print(f"✓ Project type: {project_info['type']}")
-        if project_info['framework']:
-            print(f"✓ Framework: {project_info['framework']}")
+        console.print(f"  ✓ Type: [bold]{project_info['type']}[/]"
+                      + (f" | Framework: [bold]{project_info['framework']}[/]" if project_info["framework"] else ""))
 
-        # Analyze all files with progress bar
-        files = []
-        file_count = 0
-        all_files = [f for f in self.project_path.rglob('*') if self._should_analyze_file(f)]
-        with Progress() as progress:
-            task = progress.add_task("[cyan]Analyzing files...", total=len(all_files))
-            for file_path in all_files:
-                file_info = self.analyze_file(file_path)
-                if file_info:
-                    files.append(file_info)
-                    file_count += 1
-                progress.update(task, advance=1, description=f"[cyan]Analyzing: {file_path.name}")
-        print(f"✓ Analyzed {file_count} files")
+        # ---- parallel per-file analysis ---------------------------------
+        all_files = self._iter_project_files()
+        files: List[FileInfo] = []
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("[cyan]Analyzing files…", total=len(all_files))
+            with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+                futures = {pool.submit(self.analyze_file, fp): fp for fp in all_files}
+                for fut in as_completed(futures):
+                    fi = fut.result()
+                    if fi:
+                        files.append(fi)
+                    progress.update(task, advance=1)
+        files.sort(key=lambda f: f.path)
+        console.print(f"  ✓ Analyzed [bold]{len(files)}[/] files "
+                      f"({sum(f.lines for f in files):,} lines)")
 
-        # Extract dependencies
         dependencies = self._extract_dependencies()
-        # Categorize architecture
         architecture = self._categorize_architecture(files)
-        # Calculate metrics
         metrics = self._calculate_metrics(files)
-        # NEW: Build dependency graph
-        file_dependency_graph = self._build_file_dependency_graph(files)
-        # === تحليل التغطية ===
-        coverage_xml = self.project_path / 'coverage.xml'
-        coverage_data = parse_coverage_xml(coverage_xml)
+        file_dep_graph = self._build_file_dependency_graph(files)
+
+        abs_paths = {f.path: self.project_path / f.path for f in files}
+        py_files = [abs_paths[f.path] for f in files if f.language == "Python"]
+        js_files = [abs_paths[f.path] for f in files if f.language in ("JavaScript", "TypeScript")]
+
+        # ---- optional heavy analyses ------------------------------------
+        coverage_data = parse_coverage_xml(self.project_path / "coverage.xml")
         overall_coverage = get_overall_coverage(coverage_data) if coverage_data else None
-        # === تحليل linting ===
-        py_files = [self.project_path / f.path for f in files if f.language == 'Python']
-        linting_results = run_pylint_on_files(py_files) if py_files else None
-        # === تحليل call graph ===
+
+        linting_results = flake8_results = eslint_results = None
+        complexity_results = maintainability_results = security_results = None
+
+        if run_linters:
+            if py_files:
+                with console.status("[yellow]Running pylint (batched)…", spinner="dots"):
+                    linting_results = run_pylint_on_files(py_files)
+                flake8_results = run_flake8_on_files(py_files)
+            if js_files:
+                with console.status("[yellow]Running eslint (batched)…", spinner="dots"):
+                    eslint_results = run_eslint_on_files(js_files)
+
+        if enable_complexity and py_files and tool_available("radon"):
+            with console.status("[magenta]Running radon complexity (batched)…", spinner="dots"):
+                complexity_results = analyze_complexity_with_radon(py_files)
+                maintainability_results = analyze_maintainability_with_radon(py_files)
+
+        if py_files:
+            with console.status("[red]Running bandit security scan (batched)…", spinner="dots"):
+                security_results = analyze_security_with_bandit(py_files)
+
         call_graph = extract_call_graph(py_files)
-        save_call_graph_mermaid(call_graph, self.project_path / 'call-graph.mmd')
         cycles = find_cycles(call_graph)
-        # === اكتشاف الأطر ===
-        all_files = [self.project_path / f.path for f in files]
-        detected_frameworks = detect_frameworks(all_files)
-        # === إحصائيات git ===
+        detected_frameworks = sorted(detect_frameworks(list(abs_paths.values())))
         contributors = get_contributors(self.project_path)
-        # === linting متعدد ===
-        flake8_results = run_flake8_on_files(py_files)
-        js_files = [self.project_path / f.path for f in files if f.language in ['JavaScript', 'TypeScript']]
-        eslint_results = run_eslint_on_files(js_files)
-        # === تحليل التعقيد (radon) ===
-        if enable_complexity and py_files:
-            print("[yellow]Starting complexity analysis (radon)...[/yellow]")
-            with Progress("[progress.description]{task.description}",
-                          TimeElapsedColumn(),
-                          TimeRemainingColumn(),
-                          "{task.completed}/{task.total}") as progress:
-                task = progress.add_task("[magenta]Complexity analysis...", total=len(py_files))
-                complexity_results = {}
-                start = time.time()
-                for pyf in py_files:
-                    from complexity_support import analyze_complexity_with_radon
-                    res = analyze_complexity_with_radon([pyf])
-                    complexity_results.update(res)
-                    progress.update(task, advance=1, description=f"[magenta]Analyzing: {pyf.name}")
-                elapsed = time.time() - start
-                print(f"[green]✓ Complexity analysis done in {elapsed:.1f} seconds[/green]")
-            from complexity_support import analyze_maintainability_with_radon
-            maintainability_results = analyze_maintainability_with_radon(py_files)
-        else:
-            complexity_results = None
-            maintainability_results = None
-        # === تحليل الأمان (bandit) ===
-        security_results = analyze_security_with_bandit(py_files)
-        # === تلخيص ذكي (اختياري) ===
-        ai_summaries = {}
-        if ai_api_key:
-            for file in py_files:
-                ai_summaries[str(file)] = ai_summarize_code(file, ai_api_key)
-        self.project_structure = ProjectStructure(
+        git_stats = get_git_stats(self.project_path)
+
+        ai_summaries: Dict[str, str] = {}
+        if ai_api_key and py_files:
+            with console.status("[green]Generating AI summaries…", spinner="dots"):
+                for pf in py_files[:50]:  # cost guard: top 50 files max
+                    s = ai_summarize_code(pf, ai_api_key)
+                    if s:
+                        ai_summaries[str(pf)] = s
+
+        structure = ProjectStructure(
             name=self.project_path.name,
-            type=project_info['type'],
-            languages=project_info['languages'],
-            entry_points=project_info['entry_points'],
+            type=project_info["type"],
+            languages=project_info["languages"],
+            entry_points=project_info["entry_points"],
             dependencies=dependencies,
             files=files,
             architecture=architecture,
             metrics=metrics,
-            file_dependency_graph=file_dependency_graph,
+            framework=project_info.get("framework"),
+            package_managers=project_info.get("package_managers", []),
+            file_dependency_graph=file_dep_graph,
             coverage=coverage_data,
             overall_coverage=overall_coverage,
             linting=linting_results,
             call_graph_cycles=cycles,
-            detected_frameworks=list(detected_frameworks),
+            detected_frameworks=detected_frameworks,
             contributors=contributors,
+            git_stats=git_stats,
             flake8=flake8_results,
             eslint=eslint_results,
             complexity=complexity_results,
             maintainability=maintainability_results,
             security=security_results,
-            ai_summaries=ai_summaries
+            ai_summaries=ai_summaries or None,
         )
-        return self.project_structure
+        structure.health = compute_health_score(
+            metrics=metrics,
+            test_ratio=(len(architecture.get("Tests", [])) / len(files)) if files else 0,
+            lint_issue_count=len(linting_results or []) + len(flake8_results or []),
+            security_counts=_security_counts(security_results),
+            overall_coverage=overall_coverage,
+            avg_maintainability=_avg_maintainability(maintainability_results),
+        )
+        self.project_structure = structure
+        elapsed = time.time() - started
+        console.print(f"  ✓ Analysis finished in [bold green]{elapsed:.1f}s[/]")
+        return structure
 
-    def _should_analyze_file(self, file_path: Path) -> bool:
-        """Determine if file should be analyzed"""
-        # Skip hidden files and directories
-        if any(part.startswith('.') for part in file_path.parts):
-            return False
-
-        # Skip common ignore patterns
-        ignore_patterns = [
-            'node_modules', '__pycache__', '.git', 'venv', 'env',
-            'dist', 'build', 'target', '.pytest_cache'
-        ]
-
-        if any(pattern in str(file_path) for pattern in ignore_patterns):
-            return False
-
-        # Only analyze supported file types
-        return file_path.suffix in self.supported_extensions
-
+    # ------------------------------------------------------------ helpers
     def _extract_dependencies(self) -> Dict[str, List[str]]:
-        """Extract project dependencies from config files"""
-        deps = {'runtime': [], 'development': []}
+        deps: Dict[str, List[str]] = {"runtime": [], "development": []}
 
-        # Package.json
-        package_json = self.project_path / 'package.json'
-        if package_json.exists():
+        pkg = self.project_path / "package.json"
+        if pkg.exists():
+            data = self._read_json(pkg) or {}
+            deps["runtime"].extend(sorted((data.get("dependencies") or {}).keys()))
+            deps["development"].extend(sorted((data.get("devDependencies") or {}).keys()))
+
+        req = self.project_path / "requirements.txt"
+        if req.exists():
             try:
-                with open(package_json) as f:
-                    data = json.load(f)
-                deps['runtime'].extend(data.get('dependencies', {}).keys())
-                deps['development'].extend(data.get('devDependencies', {}).keys())
+                for line in req.read_text(encoding="utf-8", errors="replace").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and not line.startswith("-"):
+                        name = re.split(r"[<>=~!\[]", line)[0].strip()
+                        if name:
+                            deps["runtime"].append(name)
+            except OSError:
+                pass
+
+        pyproject = self.project_path / "pyproject.toml"
+        if pyproject.exists():
+            try:
+                data = toml.load(pyproject)
+                proj = data.get("project", {})
+                for item in proj.get("dependencies", []) or []:
+                    name = re.split(r"[<>=~!\[]", str(item))[0].strip()
+                    if name and name not in deps["runtime"]:
+                        deps["runtime"].append(name)
             except Exception:
                 pass
 
-        # Requirements.txt
-        requirements = self.project_path / 'requirements.txt'
-        if requirements.exists():
-            try:
-                with open(requirements) as f:
-                    deps['runtime'].extend([
-                        line.split('==')[0].split('>=')[0].strip()
-                        for line in f if line.strip() and not line.startswith('#')
-                    ])
-            except Exception:
-                pass
-
+        deps["runtime"] = sorted(set(deps["runtime"]))
+        deps["development"] = sorted(set(deps["development"]))
         return deps
 
     def _categorize_architecture(self, files: List[FileInfo]) -> Dict[str, List[str]]:
-        """Categorize files by architectural role"""
-        categories = {
-            'Models': [],
-            'Controllers': [],
-            'Views': [],
-            'Services': [],
-            'Utils': [],
-            'Tests': [],
-            'Config': [],
-            'Other': []
+        categories: Dict[str, List[str]] = {
+            "Models": [], "Controllers": [], "Views": [], "Services": [],
+            "Utils": [], "Tests": [], "Config": [], "Docs": [], "Other": [],
         }
-
-        for file_info in files:
-            path_lower = file_info.path.lower()
-
-            if 'test' in path_lower:
-                categories['Tests'].append(file_info.path)
-            elif any(term in path_lower for term in ['model', 'schema', 'entity']):
-                categories['Models'].append(file_info.path)
-            elif any(term in path_lower for term in ['controller', 'route', 'handler']):
-                categories['Controllers'].append(file_info.path)
-            elif any(term in path_lower for term in ['view', 'component', 'template']):
-                categories['Views'].append(file_info.path)
-            elif any(term in path_lower for term in ['service', 'business', 'logic']):
-                categories['Services'].append(file_info.path)
-            elif any(term in path_lower for term in ['util', 'helper', 'tool']):
-                categories['Utils'].append(file_info.path)
-            elif any(term in path_lower for term in ['config', 'setting', 'env']):
-                categories['Config'].append(file_info.path)
-            else:
-                categories['Other'].append(file_info.path)
-
+        rules = [
+            ("Tests", ("test", "spec")),
+            ("Config", ("config", "setting", "env")),
+            ("Models", ("model", "schema", "entity")),
+            ("Controllers", ("controller", "route", "handler", "api")),
+            ("Views", ("view", "component", "template", "screen", "page", "ui")),
+            ("Services", ("service", "business", "logic", "engine", "manager")),
+            ("Utils", ("util", "helper", "tool", "common")),
+            ("Docs", ("doc", "readme", "guide")),
+        ]
+        for fi in files:
+            lowered = fi.path.lower()
+            placed = False
+            for cat, tokens in rules:
+                if any(t in lowered for t in tokens):
+                    categories[cat].append(fi.path)
+                    placed = True
+                    break
+            if not placed:
+                categories["Other"].append(fi.path)
         return categories
 
     def _calculate_metrics(self, files: List[FileInfo]) -> Dict[str, Any]:
-        """Calculate project metrics"""
-        total_lines = sum(f.lines for f in files)
         total_files = len(files)
-        total_functions = sum(len(f.functions) for f in files)
-        total_classes = sum(len(f.classes) for f in files)
-        avg_complexity = sum(f.complexity_score for f in files) / total_files if total_files > 0 else 0
+        total_lines = sum(f.lines for f in files)
+        code_lines = sum(f.code_lines for f in files)
+        lang_dist: Dict[str, int] = defaultdict(int)
+        for fi in files:
+            lang_dist[fi.language] += fi.lines
 
-        language_distribution = defaultdict(int)
-        for file_info in files:
-            language_distribution[file_info.language] += file_info.lines
-
+        largest = max(files, key=lambda f: f.lines).path if files else None
         return {
-            'total_files': total_files,
-            'total_lines': total_lines,
-            'total_functions': total_functions,
-            'total_classes': total_classes,
-            'average_complexity': round(avg_complexity, 2),
-            'language_distribution': dict(language_distribution)
+            "total_files": total_files,
+            "total_lines": total_lines,
+            "code_lines": code_lines,
+            "blank_comment_lines": total_lines - code_lines,
+            "total_functions": sum(len(f.functions) for f in files),
+            "total_classes": sum(len(f.classes) for f in files),
+            "average_complexity": round(
+                sum(f.complexity_score for f in files) / total_files, 2
+            ) if total_files else 0,
+            "language_distribution": dict(lang_dist),
+            "largest_file": largest,
+            "total_size_kb": round(sum(f.size for f in files) / 1024, 1),
         }
 
     def _build_file_dependency_graph(self, files: List[FileInfo]) -> Dict[str, List[str]]:
-        """بناء رسم علاقات الاستيراد بين الملفات (dependency graph)"""
-        # فقط للملفات التي تم تحليلها
-        file_map = {f.path: f for f in files}
-        dep_graph = {f.path: [] for f in files}
-        # ابحث عن كل import يشير إلى ملف آخر في المشروع
-        for file in files:
-            for imp in file.imports:
-                # ابحث عن ملف يحمل نفس اسم import (بدون الامتداد)
-                for other in files:
-                    if other is file:
-                        continue
-                    # Python: import mymodule -> mymodule.py
-                    if imp == Path(other.path).stem or imp == other.path.replace("/", ".").rsplit(".", 1)[0]:
-                        dep_graph[file.path].append(other.path)
-        return dep_graph
+        """O(n·m) import graph using stem/dotted-module indexes."""
+        by_stem: Dict[str, List[str]] = defaultdict(list)
+        by_dotted: Dict[str, str] = {}
+        for f in files:
+            stem = Path(f.path).stem
+            dotted = Path(f.path).with_suffix("").as_posix().replace("/", ".")
+            by_stem[stem].append(f.path)
+            by_dotted[dotted] = f.path
+
+        graph: Dict[str, List[str]] = {f.path: [] for f in files}
+        for f in files:
+            seen: Set[str] = set()
+            for imp in f.imports:
+                parts = imp.split(".")
+                target: Optional[str] = None
+                for i in range(len(parts), 0, -1):
+                    cand = ".".join(parts[:i])
+                    if cand in by_dotted and by_dotted[cand] != f.path:
+                        target = by_dotted[cand]
+                        break
+                if target is None and parts[0] in by_stem:
+                    local = [p for p in by_stem[parts[0]] if p != f.path]
+                    target = local[0] if local else None
+                if target and target not in seen:
+                    seen.add(target)
+                    graph[f.path].append(target)
+        return graph
+
+
+def _security_counts(security: Optional[Dict[str, list]]) -> Dict[str, int]:
+    counts = {"LOW": 0, "MEDIUM": 0, "HIGH": 0}
+    for issues in (security or {}).values():
+        for issue in issues:
+            sev = str(issue.get("issue_severity", "LOW")).upper()
+            counts[sev] = counts.get(sev, 0) + 1
+    return counts
+
+
+def _avg_maintainability(maintainability: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Average Maintainability Index across files (None when unavailable)."""
+    if not maintainability:
+        return None
+    values = []
+    for entry in maintainability.values():
+        if isinstance(entry, dict):
+            mi = entry.get("mi")
+            if isinstance(mi, (int, float)):
+                values.append(mi)
+        elif isinstance(entry, (int, float)):
+            values.append(entry)
+    return round(sum(values) / len(values), 1) if values else None
+
+
+# ---------------------------------------------------------------------------
+# Documentation generation
+# ---------------------------------------------------------------------------
+
 
 class DocumentationGenerator:
-    """Generates enhanced documentation and visualizations"""
+    """Generates every documentation artifact into the output directory."""
 
-    def __init__(self, project_structure: ProjectStructure, output_dir: Path):
+    def __init__(
+        self,
+        project_structure: ProjectStructure,
+        output_dir: Path,
+        project_root: Optional[Path] = None,
+    ):
         self.structure = project_structure
-        self.output_dir = output_dir
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.project_root = Path(project_root) if project_root else None
+        self.generated: List[str] = []
 
-    def generate_all(self):
-        """Generate all documentation outputs"""
-        print("📝 Generating documentation...")
+    def _src(self, rel_path: str) -> Path:
+        """Resolve a relative file path against the real project root."""
+        base = self.project_root or self.structure_root_fallback()
+        return base / rel_path
 
+    def structure_root_fallback(self) -> Path:
+        # legacy behavior: assume output sits inside the project
+        return self.output_dir.parent
+
+    # ------------------------------------------------------------------ all
+    def generate_all(self) -> List[str]:
+        console.print("[bold cyan]📝 Generating documentation…[/]")
         self.generate_enhanced_readme()
         self.generate_architecture_diagram()
         self.generate_file_dependency_diagram()
@@ -723,92 +1090,81 @@ class DocumentationGenerator:
         self.generate_uml_diagram()
         self.generate_usage_examples_file()
         self.generate_file_summaries()
-        print(self._generate_code_quality_section())
-        print("✅ Documentation generation complete!")
-        print(f"📁 Output files saved to: {self.output_dir}")
+        self.write_quality_reports()
+        self.write_recommendations()
+        self.generate_html_report()
+        console.print(f"  ✓ Generated [bold]{len(self.generated)}[/] artifacts in "
+                      f"[bold]{self.output_dir}[/]")
+        return self.generated
 
-        # إضافة call-graph.mmd
-        if hasattr(self.structure, 'call_graph_cycles') and self.structure.call_graph_cycles:
-            with open(self.output_dir / 'call-graph-cycles.txt', 'w', encoding='utf-8') as f:
-                for cycle in self.structure.call_graph_cycles:
-                    f.write(' -> '.join(cycle) + '\n')
-        # إضافة contributors
-        if hasattr(self.structure, 'contributors'):
-            with open(self.output_dir / 'contributors.txt', 'w', encoding='utf-8') as f:
-                for c in self.structure.contributors:
-                    f.write(f"{c['name']}: {c['commits']} commits\n")
-        # إضافة linting متعدد
-        if hasattr(self.structure, 'flake8'):
-            with open(self.output_dir / 'flake8-linting.json', 'w', encoding='utf-8') as f:
-                import json; f.write(json.dumps(self.structure.flake8, ensure_ascii=False, indent=2))
-        if hasattr(self.structure, 'eslint'):
-            with open(self.output_dir / 'eslint-linting.json', 'w', encoding='utf-8') as f:
-                import json; f.write(json.dumps(self.structure.eslint, ensure_ascii=False, indent=2))
-        # إضافة توصيات ذكية
-        from recommendation_support import generate_recommendations
-        recs = generate_recommendations(self.structure.metrics, self.structure.overall_coverage, len(self.structure.linting) if self.structure.linting else 0)
-        with open(self.output_dir / 'recommendations.txt', 'w', encoding='utf-8') as f:
-            for r in recs:
-                f.write(r + '\n')
-        # إضافة تقارير التعقيد والأمان والتلخيص الذكي
-        if hasattr(self.structure, 'complexity'):
-            with open(self.output_dir / 'complexity_report.json', 'w', encoding='utf-8') as f:
-                import json; f.write(json.dumps(self.structure.complexity, ensure_ascii=False, indent=2))
-        if hasattr(self.structure, 'maintainability'):
-            with open(self.output_dir / 'maintainability_report.json', 'w', encoding='utf-8') as f:
-                import json; f.write(json.dumps(self.structure.maintainability, ensure_ascii=False, indent=2))
-        if hasattr(self.structure, 'security'):
-            with open(self.output_dir / 'security_report.json', 'w', encoding='utf-8') as f:
-                import json; f.write(json.dumps(self.structure.security, ensure_ascii=False, indent=2))
-        if hasattr(self.structure, 'ai_summaries') and self.structure.ai_summaries:
-            with open(self.output_dir / 'ai_summaries.txt', 'w', encoding='utf-8') as f:
-                for file, summary in self.structure.ai_summaries.items():
-                    f.write(f"# {file}\n{summary}\n\n")
+    def _write(self, filename: str, content: str, binary: bool = False):
+        mode = "wb" if binary else "w"
+        enc = {} if binary else {"encoding": "utf-8"}
+        with open(self.output_dir / filename, mode, **enc) as f:
+            f.write(content)
+        self.generated.append(filename)
 
+    # --------------------------------------------------------------- README
     def generate_enhanced_readme(self):
-        """Generate enhanced README.md"""
-        coverage_str = f"{self.structure.overall_coverage:.1f}%" if self.structure.overall_coverage is not None else "Not available"
-        linting_str = str(len(self.structure.linting)) if self.structure.linting else "0"
-        readme_content = f"""# {self.structure.name}
+        s = self.structure
+        cov = f"{s.overall_coverage:.1f}%" if s.overall_coverage is not None else "Not available"
+        lint_n = len(s.linting or [])
+        health = s.health or {}
+        description = generate_project_description(s)
+        badges = " ".join([
+            f"![Language](https://img.shields.io/badge/language-{s.type.replace(' ', '%20')}-blue)",
+            f"![Files](https://img.shields.io/badge/files-{s.metrics['total_files']}-informational)",
+            f"![Lines](https://img.shields.io/badge/lines-{s.metrics['total_lines']:,}-informational)",
+            f"![Health](https://img.shields.io/badge/health-{health.get('grade','?')}-{_health_color(health.get('score', 0))})",
+        ])
+        content = f"""# {s.name}
+
+{badges}
 
 ## 🚀 Overview
-{self._generate_project_description()}
+{description}
 
 ## 📊 Project Statistics
-- **Type**: {self.structure.type}
-- **Languages**: {', '.join(self.structure.languages)}
-- **Total Files**: {self.structure.metrics['total_files']}
-- **Total Lines**: {self.structure.metrics['total_lines']:,}
-- **Functions**: {self.structure.metrics['total_functions']}
-- **Classes**: {self.structure.metrics['total_classes']}
-- **Coverage**: {coverage_str}\n- **Linting Issues**: {linting_str}\n
-## 🏗️ Architecture
-
-```
-{self._generate_architecture_tree()}
-```
+| Metric | Value |
+|---|---|
+| Type | {s.type} |
+| Languages | {', '.join(s.languages)} |
+| Files | {s.metrics['total_files']} |
+| Total Lines | {s.metrics['total_lines']:,} |
+| Code Lines | {s.metrics['code_lines']:,} |
+| Functions | {s.metrics['total_functions']} |
+| Classes | {s.metrics['total_classes']} |
+| Avg Complexity | {s.metrics['average_complexity']} |
+| Test Coverage | {cov} |
+| Lint Issues | {lint_n} |
+| Health Score | {health.get('score', '—')}/100 ({health.get('grade', '—')}) |
 
 ### 📂 Project Structure
-{self._generate_structure_description()}
+```text
+{_ascii_tree(s.architecture)}
+```
+
+{generate_structure_description(s)}
 
 ## 🔧 Dependencies
-{self._generate_dependencies_section()}
+{generate_dependencies_section(s)}
 
 ## 🚀 Getting Started
 
 ### Prerequisites
-{self._generate_prerequisites()}
+{generate_prerequisites(s)}
 
 ### Installation
-{self._generate_installation_steps()}
+{generate_installation_steps(s)}
 
 ### Usage
-{self._generate_usage_examples()}
+{generate_usage_examples_block(s)}
 
-## 📈 Code Metrics
-- **Average Complexity**: {self.structure.metrics['average_complexity']}
-- **Language Distribution**:
-{self._format_language_distribution()}
+## 🏥 Health Report
+{generate_health_section(s)}
+
+## 📈 Language Distribution
+{format_language_distribution(s)}
 
 ## 🤝 Contributing
 1. Fork the repository
@@ -818,706 +1174,817 @@ class DocumentationGenerator:
 5. Open a Pull Request
 
 ## 📄 License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
 ---
-*This README was auto-generated by SmartRepo*
+*This README was auto-generated by SmartRepo Analyzer v{__version__} at {utc_now_iso()}*
 """
+        self._write("readme-enhanced.md", content)
 
-        with open(self.output_dir / 'readme-enhanced.md', 'w') as f:
-            f.write(readme_content)
-
-    def _generate_project_description(self) -> str:
-        """Generate intelligent project description"""
-        desc_parts = []
-
-        if self.structure.type == 'Node.js':
-            desc_parts.append("A Node.js application")
-        elif self.structure.type == 'Python':
-            desc_parts.append("A Python application")
-        elif self.structure.type == 'Flutter':
-            desc_parts.append("A Flutter mobile application")
-        else:
-            desc_parts.append(f"A {self.structure.type} application")
-
-        # Add framework info
-        main_files = [f for f in self.structure.files if any(ep in f.path for ep in self.structure.entry_points)]
-        if main_files:
-            desc_parts.append(f"with main entry point at `{main_files[0].path}`")
-
-        # Add architecture insights
-        if self.structure.architecture['Models']:
-            desc_parts.append("featuring a well-structured data layer")
-
-        if self.structure.architecture['Services']:
-            desc_parts.append("with dedicated business logic services")
-
-        return '. '.join(desc_parts) + '.'
-
-    def _generate_architecture_tree(self) -> str:
-        """Generate ASCII tree of project structure"""
-        tree_lines = []
-
-        for category, files in self.structure.architecture.items():
-            if files:
-                tree_lines.append(f"├── {category}/")
-                for i, file_path in enumerate(files):  # عرض كل الملفات
-                    prefix = "│   ├──" if i < len(files) - 1 else "│   └──"
-                    tree_lines.append(f"{prefix} {Path(file_path).name}")
-
-        return '\n'.join(tree_lines)
-
-    def _generate_structure_description(self) -> str:
-        """Generate structure description"""
-        descriptions = []
-
-        for category, files in self.structure.architecture.items():
-            if files:
-                count = len(files)
-                if category == 'Models':
-                    descriptions.append(f"- **{category}** ({count} files): Data models and schemas")
-                elif category == 'Controllers':
-                    descriptions.append(f"- **{category}** ({count} files): Request handlers and route controllers")
-                elif category == 'Views':
-                    descriptions.append(f"- **{category}** ({count} files): UI components and templates")
-                elif category == 'Services':
-                    descriptions.append(f"- **{category}** ({count} files): Business logic and services")
-                elif category == 'Utils':
-                    descriptions.append(f"- **{category}** ({count} files): Utility functions and helpers")
-                elif category == 'Tests':
-                    descriptions.append(f"- **{category}** ({count} files): Test suites and specifications")
-                elif category == 'Config':
-                    descriptions.append(f"- **{category}** ({count} files): Configuration files")
-                else:
-                    descriptions.append(f"- **{category}** ({count} files): Other project files")
-
-        return '\n'.join(descriptions)
-
-    def _generate_dependencies_section(self) -> str:
-        """Generate dependencies section"""
-        sections = []
-
-        if self.structure.dependencies['runtime']:
-            sections.append("### Runtime Dependencies")
-            runtime_deps = self.structure.dependencies['runtime'][:10]  # Show first 10
-            for dep in runtime_deps:
-                sections.append(f"- `{dep}`")
-            if len(self.structure.dependencies['runtime']) > 10:
-                sections.append(f"- ... and {len(self.structure.dependencies['runtime']) - 10} more")
-
-        if self.structure.dependencies['development']:
-            sections.append("\n### Development Dependencies")
-            dev_deps = self.structure.dependencies['development'][:10]
-            for dep in dev_deps:
-                sections.append(f"- `{dep}`")
-            if len(self.structure.dependencies['development']) > 10:
-                sections.append(f"- ... and {len(self.structure.dependencies['development']) - 10} more")
-
-        return '\n'.join(sections) if sections else "No dependencies detected."
-
-    def _generate_prerequisites(self) -> str:
-        """Generate prerequisites section"""
-        prereqs = []
-
-        if self.structure.type == 'Node.js':
-            prereqs.append("- Node.js (v14 or higher)")
-            prereqs.append("- npm or yarn")
-        elif self.structure.type == 'Python':
-            prereqs.append("- Python 3.7+")
-            prereqs.append("- pip")
-        elif self.structure.type == 'Flutter':
-            prereqs.append("- Flutter SDK")
-            prereqs.append("- Dart SDK")
-        elif self.structure.type == 'Rust':
-            prereqs.append("- Rust toolchain")
-            prereqs.append("- Cargo")
-        elif self.structure.type == 'Go':
-            prereqs.append("- Go 1.16+")
-
-        return '\n'.join(prereqs) if prereqs else "- Check project documentation for specific requirements"
-
-    def _generate_installation_steps(self) -> str:
-        """Generate installation steps"""
-        steps = ["```bash", "# Clone the repository", f"git clone <repository-url>", f"cd {self.structure.name}", ""]
-
-        if self.structure.type == 'Node.js':
-            steps.extend(["# Install dependencies", "npm install", ""])
-        elif self.structure.type == 'Python':
-            steps.extend(["# Install dependencies", "pip install -r requirements.txt", ""])
-        elif self.structure.type == 'Flutter':
-            steps.extend(["# Get dependencies", "flutter pub get", ""])
-        elif self.structure.type == 'Rust':
-            steps.extend(["# Build the project", "cargo build", ""])
-        elif self.structure.type == 'Go':
-            steps.extend(["# Download dependencies", "go mod download", ""])
-
-        steps.append("```")
-        return '\n'.join(steps)
-
-    def _generate_usage_examples(self) -> str:
-        """Generate usage examples"""
-        examples = ["```bash"]
-
-        if self.structure.entry_points:
-            entry_point = self.structure.entry_points[0]
-
-            if self.structure.type == 'Node.js':
-                examples.append(f"# Start the application")
-                examples.append(f"npm start")
-                examples.append(f"# or")
-                examples.append(f"node {entry_point}")
-            elif self.structure.type == 'Python':
-                examples.append(f"# Run the application")
-                examples.append(f"python {entry_point}")
-            elif self.structure.type == 'Flutter':
-                examples.append(f"# Run the app")
-                examples.append(f"flutter run")
-            elif self.structure.type == 'Rust':
-                examples.append(f"# Run the application")
-                examples.append(f"cargo run")
-            elif self.structure.type == 'Go':
-                examples.append(f"# Run the application")
-                examples.append(f"go run {entry_point}")
-        else:
-            examples.append("# Check project documentation for usage instructions")
-
-        examples.append("```")
-        return '\n'.join(examples)
-
-    def _format_language_distribution(self) -> str:
-        """Format language distribution"""
-        total_lines = sum(self.structure.metrics['language_distribution'].values())
-        lines = []
-
-        for lang, line_count in sorted(self.structure.metrics['language_distribution'].items(),
-                                     key=lambda x: x[1], reverse=True):
-            percentage = (line_count / total_lines * 100) if total_lines > 0 else 0
-            lines.append(f"  - **{lang}**: {line_count:,} lines ({percentage:.1f}%)")
-
-        return '\n'.join(lines)
-
+    # ------------------------------------------------------------ diagrams
     def generate_architecture_diagram(self):
-        """Generate Mermaid architecture diagram"""
-        mermaid_content = self._generate_mermaid_diagram()
+        mermaid_content = _mermaid_architecture(self.structure)
+        self._write("architecture.mmd", mermaid_content)
+        self._render_png("architecture.mmd", "architecture.png")
 
-        with open(self.output_dir / 'architecture.mmd', 'w') as f:
-            f.write(mermaid_content)
-
-        # Try to generate PNG if mermaid-cli is available
-        self._generate_diagram_png()
-
-    def _generate_mermaid_diagram(self) -> str:
-        """Generate Mermaid diagram content"""
-        diagram_lines = ["graph TD"]
-
-        # Add main application node
-        diagram_lines.append(f"    APP[{self.structure.name}]")
-
-        # Add category nodes and connections
-        node_id = 0
-        category_nodes = {}
-
-        for category, files in self.structure.architecture.items():
-            if files:
-                node_id += 1
-                category_node = f"CAT{node_id}"
-                category_nodes[category] = category_node
-
-                # Style based on category
-                if category == 'Controllers':
-                    diagram_lines.append(f"    {category_node}[{category}]:::controller")
-                elif category == 'Models':
-                    diagram_lines.append(f"    {category_node}[{category}]:::model")
-                elif category == 'Views':
-                    diagram_lines.append(f"    {category_node}[{category}]:::view")
-                elif category == 'Services':
-                    diagram_lines.append(f"    {category_node}[{category}]:::service")
-                else:
-                    diagram_lines.append(f"    {category_node}[{category}]")
-
-                diagram_lines.append(f"    APP --> {category_node}")
-
-                # Add كل الملفات
-                for i, file_path in enumerate(files):
-                    node_id += 1
-                    file_node = f"FILE{node_id}"
-                    file_name = Path(file_path).name
-                    diagram_lines.append(f"    {file_node}[{file_name}]")
-                    diagram_lines.append(f"    {category_node} --> {file_node}")
-
-        # Add styling
-        diagram_lines.extend([
-            "",
-            "    classDef controller fill:#e1f5fe",
-            "    classDef model fill:#f3e5f5",
-            "    classDef view fill:#e8f5e8",
-            "    classDef service fill:#fff3e0"
-        ])
-
-        return '\n'.join(diagram_lines)
-
-    def _generate_diagram_png(self):
-        """Try to generate PNG from Mermaid (requires mermaid-cli)"""
+    def _render_png(self, mmd_name: str, png_name: str):
+        if not tool_available("mmdc"):
+            console.print("  ⚠ mermaid-cli not found — PNG rendering skipped "
+                          "(npm i -g @mermaid-js/mermaid-cli)")
+            return
         try:
-            input_file = self.output_dir / 'architecture.mmd'
-            output_file = self.output_dir / 'architecture.png'
-
-            result = subprocess.run([
-                'mmdc', '-i', str(input_file), '-o', str(output_file),
-                '-t', 'neutral', '-b', 'white'
-            ], capture_output=True, text=True)
-
-            if result.returncode == 0:
-                print("✓ Architecture PNG generated")
-            else:
-                print("⚠ Mermaid CLI not available. Install with: npm install -g @mermaid-js/mermaid-cli")
-        except FileNotFoundError:
-            print("⚠ Mermaid CLI not found. PNG generation skipped.")
+            result = subprocess.run(
+                ["mmdc", "-i", str(self.output_dir / mmd_name),
+                 "-o", str(self.output_dir / png_name), "-t", "neutral", "-b", "white"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0 and png_name:
+                self.generated.append(png_name)
+                console.print(f"  ✓ {png_name} rendered")
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
     def generate_file_dependency_diagram(self):
-        """توليد مخطط Mermaid يوضح العلاقات بين الملفات (dependency graph)"""
-        dep_graph = self.structure.file_dependency_graph
-        if not dep_graph:
-            print("لا يوجد رسم علاقات بين الملفات")
+        g = self.structure.file_dependency_graph or {}
+        if not any(g.values()):
             return
         lines = ["graph TD"]
-        for src, targets in dep_graph.items():
-            src_node = src.replace("/", "_").replace(".", "_")
-            if not targets:
-                lines.append(f"    {src_node}['{src}']")
-            for tgt in targets:
-                tgt_node = tgt.replace("/", "_").replace(".", "_")
-                lines.append(f"    {src_node}['{src}'] --> {tgt_node}['{tgt}']")
-        with open(self.output_dir / 'file-dependency-graph.mmd', 'w') as f:
-            f.write('\n'.join(lines))
-        print("✓ تم توليد مخطط علاقات الملفات: file-dependency-graph.mmd")
+        edges = 0
+        for src, targets in sorted(g.items()):
+            for tgt in targets[:20]:  # keep diagrams readable
+                lines.append(f"    {_mid(src)}['{Path(src).name}'] --> {_mid(tgt)}['{Path(tgt).name}']")
+                edges += 1
+        if edges > 800:
+            return  # too dense to be useful
+        self._write("file-dependency-graph.mmd", "\n".join(lines))
 
+    # ------------------------------------------------------------ summaries
     def generate_ai_summary(self):
-        """Generate AI-friendly JSON summary"""
+        s = self.structure
         summary = {
             "project_overview": {
-                "name": self.structure.name,
-                "type": self.structure.type,
-                "languages": self.structure.languages,
-                "entry_points": self.structure.entry_points,
-                "description": self._generate_project_description()
+                "name": s.name,
+                "type": s.type,
+                "framework": s.framework,
+                "languages": s.languages,
+                "entry_points": s.entry_points,
+                "detected_frameworks": s.detected_frameworks,
+                "description": generate_project_description(s),
             },
-            "metrics": self.structure.metrics,
-            "dependencies": self.structure.dependencies,
+            "health": s.health,
+            "git": s.git_stats,
+            "metrics": s.metrics,
+            "dependencies": s.dependencies,
             "architecture": {
                 category: {
-                    "file_count": len(files),
-                    "files": files,  # كل الملفات
-                    "description": self._get_category_description(category)
+                    "file_count": len(files_),
+                    "files": files_,
+                    "description": CATEGORY_DESCRIPTIONS.get(category, "Project files"),
                 }
-                for category, files in self.structure.architecture.items()
-                if files
+                for category, files_ in s.architecture.items() if files_
             },
             "file_summaries": [
                 {
-                    "path": file.path,
-                    "language": file.language,
-                    "summary": file.summary,
-                    "functions": file.functions[:10],  # First 10 functions
-                    "classes": file.classes,
-                    "lines": file.lines,
-                    "complexity": file.complexity_score
+                    "path": f.path,
+                    "language": f.language,
+                    "summary": f.summary,
+                    "docstring": f.docstring,
+                    "functions": f.functions[:15],
+                    "classes": f.classes,
+                    "lines": f.lines,
+                    "code_lines": f.code_lines,
+                    "complexity": f.complexity_score,
                 }
-                for file in sorted(self.structure.files, key=lambda x: x.lines, reverse=True)[:20]  # Top 20 files
+                for f in sorted(s.files, key=lambda x: x.lines, reverse=True)[:30]
             ],
-            "key_insights": self._generate_key_insights(),
-            "generated_at": "2025-07-23T00:00:00Z",
-            "analyzer_version": "1.0.0"
+            "call_graph_cycles": s.call_graph_cycles,
+            "key_insights": generate_key_insights(s),
+            "generated_at": s.generated_at,
+            "analyzer_version": ANALYZER_VERSION,
         }
-
-        with open(self.output_dir / 'ai-summary.json', 'w') as f:
-            json.dump(summary, f, indent=2, ensure_ascii=False)
-
-    def _get_category_description(self, category: str) -> str:
-        """Get description for architecture category"""
-        descriptions = {
-            'Models': 'Data models, schemas, and database entities',
-            'Controllers': 'Request handlers, route controllers, and API endpoints',
-            'Views': 'UI components, templates, and presentation layer',
-            'Services': 'Business logic, services, and core functionality',
-            'Utils': 'Utility functions, helpers, and common tools',
-            'Tests': 'Test suites, unit tests, and testing utilities',
-            'Config': 'Configuration files and environment settings',
-            'Other': 'Miscellaneous files and additional components'
-        }
-        return descriptions.get(category, 'Project files')
-
-    def _generate_key_insights(self) -> List[str]:
-        """Generate key insights about the project"""
-        insights = []
-
-        # Complexity insights
-        if self.structure.metrics['average_complexity'] > 5:
-            insights.append("High code complexity detected - consider refactoring for maintainability")
-        elif self.structure.metrics['average_complexity'] < 2:
-            insights.append("Low complexity code - well-structured and maintainable")
-
-        # Architecture insights
-        if self.structure.architecture['Tests']:
-            test_ratio = len(self.structure.architecture['Tests']) / self.structure.metrics['total_files']
-            if test_ratio > 0.3:
-                insights.append("Good test coverage - testing is well-integrated")
-            elif test_ratio < 0.1:
-                insights.append("Limited test files detected - consider improving test coverage")
-
-        if self.structure.architecture['Models'] and self.structure.architecture['Controllers']:
-            insights.append("Follows MVC-like architecture pattern")
-
-        if self.structure.architecture['Services']:
-            insights.append("Service-oriented architecture detected")
-
-        # Language insights
-        lang_count = len(self.structure.metrics['language_distribution'])
-        if lang_count > 3:
-            insights.append(f"Multi-language project ({lang_count} languages) - good for diverse functionality")
-
-        # Size insights
-        if self.structure.metrics['total_lines'] > 10000:
-            insights.append("Large codebase - consider modularization strategies")
-        elif self.structure.metrics['total_lines'] < 1000:
-            insights.append("Compact project - good for quick understanding and maintenance")
-
-        return insights
+        self._write("ai-summary.json", json.dumps(summary, indent=2, ensure_ascii=False))
 
     def generate_prompt_ready(self):
-        """Generate prompt-ready documentation for AI consumption"""
-        content = f"""# AI-Ready Project Analysis: {self.structure.name}
+        s = self.structure
+        health = s.health or {}
+        complexity_level = (
+            "High" if s.metrics["average_complexity"] > 5
+            else "Medium" if s.metrics["average_complexity"] > 3 else "Low"
+        )
+        content = f"""# AI-Ready Project Analysis: {s.name}
 
 ## Quick Summary
-This is a {self.structure.type} project with {self.structure.metrics['total_files']} files and {self.structure.metrics['total_lines']:,} lines of code across {len(self.structure.languages)} programming languages.
+This is a **{s.type}** project ({s.framework or 'no dominant framework'}) with \
+{s.metrics['total_files']} files and {s.metrics['total_lines']:,} lines of code across \
+{len(s.languages)} language(s). Health score: **{health.get('score', '—')}/100 ({health.get('grade', '—')})**.
 
 ## Project Context
-**Type**: {self.structure.type}
-**Languages**: {', '.join(self.structure.languages)}
-**Entry Points**: {', '.join(self.structure.entry_points) if self.structure.entry_points else 'Not specified'}
+- **Type**: {s.type}
+- **Framework**: {s.framework or 'Not detected'}
+- **Languages**: {', '.join(s.languages)}
+- **Entry Points**: {', '.join(s.entry_points) if s.entry_points else 'Not specified'}
+- **Detected Frameworks**: {', '.join(s.detected_frameworks or []) or 'None'}
+- **Package Managers**: {', '.join(s.package_managers) or 'Unknown'}
 
 ## Architecture Overview
-{self._generate_architecture_prompt_section()}
+{prompt_architecture_section(s)}
 
 ## Key Components
-{self._generate_components_prompt_section()}
+{components_prompt_section(s)}
 
 ## Code Characteristics
-- **Complexity Level**: {'High' if self.structure.metrics['average_complexity'] > 5 else 'Medium' if self.structure.metrics['average_complexity'] > 3 else 'Low'}
-- **Total Functions**: {self.structure.metrics['total_functions']}
-- **Total Classes**: {self.structure.metrics['total_classes']}
-- **Testing**: {'Well-tested' if self.structure.architecture['Tests'] else 'Limited testing'}
+- **Complexity Level**: {complexity_level} (avg {s.metrics['average_complexity']})
+- **Total Functions**: {s.metrics['total_functions']}
+- **Total Classes**: {s.metrics['total_classes']}
+- **Testing**: {'Well-tested' if s.architecture.get('Tests') else 'Limited testing'}
 
 ## Dependencies Context
-{self._generate_dependencies_prompt_section()}
-
-## File Structure Summary
-{self._generate_file_structure_prompt()}
+{dependencies_prompt_section(s)}
 
 ## Development Insights
-{chr(10).join(f'- {insight}' for insight in self._generate_key_insights())}
+{chr(10).join('- ' + i for i in generate_key_insights(s))}
 
 ## Language Distribution
-{self._generate_language_prompt_section()}
+{language_prompt_section(s)}
 
 ---
-*This analysis provides AI-ready context for understanding, documenting, or extending this codebase.*
+*Generated by SmartRepo Analyzer v{__version__} — ready-to-use context for LLMs.*
 """
-
-        with open(self.output_dir / 'prompt-ready.md', 'w') as f:
-            f.write(content)
-
-    def _generate_architecture_prompt_section(self) -> str:
-        """Generate architecture section for prompts"""
-        sections = []
-
-        for category, files in self.structure.architecture.items():
-            if files:
-                count = len(files)
-                sections.append(f"**{category}** ({count} files): {self._get_category_description(category)}")
-
-        return '\n'.join(sections)
-
-    def _generate_components_prompt_section(self) -> str:
-        """Generate components section for prompts"""
-        components = []
-
-        # Get top files by different criteria
-        largest_files = sorted(self.structure.files, key=lambda x: x.lines, reverse=True)[:5]
-        most_complex = sorted(self.structure.files, key=lambda x: x.complexity_score, reverse=True)[:3]
-
-        components.append("**Largest Files**:")
-        for file in largest_files:
-            components.append(f"- `{file.path}` ({file.lines} lines, {file.language}): {file.summary}")
-
-        if most_complex[0].complexity_score > 3:
-            components.append("\n**Most Complex Files**:")
-            for file in most_complex:
-                if file.complexity_score > 3:
-                    components.append(f"- `{file.path}` (complexity: {file.complexity_score}): {file.summary}")
-
-        return '\n'.join(components)
-
-    def _generate_dependencies_prompt_section(self) -> str:
-        """Generate dependencies section for prompts"""
-        sections = []
-
-        if self.structure.dependencies['runtime']:
-            key_deps = self.structure.dependencies['runtime'][:8]
-            sections.append(f"**Key Runtime Dependencies**: {', '.join(key_deps)}")
-
-        if self.structure.dependencies['development']:
-            dev_deps = self.structure.dependencies['development'][:5]
-            sections.append(f"**Development Tools**: {', '.join(dev_deps)}")
-
-        return '\n'.join(sections) if sections else "No major dependencies detected."
-
-    def _generate_file_structure_prompt(self) -> str:
-        """Generate file structure for prompts"""
-        structure = []
-
-        for category, files in self.structure.architecture.items():
-            if files:
-                structure.append(f"- **{category}**: {len(files)} files")
-                # Show a few example files
-                examples = [Path(f).name for f in files[:3]]
-                structure.append(f"  Examples: {', '.join(examples)}")
-
-        return '\n'.join(structure)
-
-    def _generate_language_prompt_section(self) -> str:
-        """Generate language distribution for prompts"""
-        total_lines = sum(self.structure.metrics['language_distribution'].values())
-        sections = []
-
-        for lang, lines in sorted(self.structure.metrics['language_distribution'].items(),
-                                key=lambda x: x[1], reverse=True):
-            percentage = (lines / total_lines * 100) if total_lines > 0 else 0
-            sections.append(f"- **{lang}**: {percentage:.1f}% ({lines:,} lines)")
-
-        return '\n'.join(sections)
-
-    def _generate_code_quality_section(self) -> str:
-        """إضافة ملخص التغطية و linting في قسم منفصل"""
-        lines = []
-        if self.structure.overall_coverage is not None:
-            lines.append(f"- **Test Coverage**: {self.structure.overall_coverage:.1f}%")
-        if self.structure.linting:
-            issues = [l for l in self.structure.linting if l.get('type') == 'convention' or l.get('type') == 'error']
-            lines.append(f"- **Linting Issues**: {len(issues)} (convention/error)")
-        return '\n'.join(lines) if lines else "- No code quality data."
+        self._write("prompt-ready.md", content)
 
     def generate_uml_diagram(self):
-        """توليد مخطط UML class diagram وحفظه"""
-        py_files = [self.output_dir.parent / f.path for f in self.structure.files if f.language == 'Python']
+        py_files = [self._src(f.path) for f in self.structure.files if f.language == "Python"]
         if py_files:
-            output_path = self.output_dir / 'uml-class-diagram.mmd'
-            generate_mermaid_class_diagram(py_files, output_path)
-            print("✓ تم توليد مخطط UML class diagram")
+            out = self.output_dir / "uml-class-diagram.mmd"
+            generate_mermaid_class_diagram(py_files, out)
+            self.generated.append("uml-class-diagram.mmd")
+
     def generate_usage_examples_file(self):
-        """توليد ملف أمثلة استخدام تلقائية"""
-        py_files = [self.output_dir.parent / f.path for f in self.structure.files if f.language == 'Python']
-        if py_files:
-            examples = extract_usage_examples(py_files)
-            with open(self.output_dir / 'usage-examples.txt', 'w', encoding='utf-8') as f:
-                for ex in examples:
-                    f.write(ex + '\n')
-            print(f"✓ تم توليد أمثلة استخدام: {len(examples)} مثال")
+        py_files = [self._src(f.path) for f in self.structure.files if f.language == "Python"]
+        examples = extract_usage_examples(py_files)
+        if examples:
+            self._write("usage-examples.txt", "\n".join(examples))
+
     def generate_file_summaries(self):
-        """تلخيص الملفات الكبيرة وحفظها"""
-        # استخدم المسار الأصلي للمشروع
-        project_root = self.output_dir.parent  # مجلد المشروع الأصلي
+        summaries_dir = self.output_dir / "summaries"
+        count = 0
         for f in self.structure.files:
-            if f.lines > 100:
-                src_path = project_root / f.path
-                if src_path.exists():
-                    summary = summarize_file(src_path)
-                    with open(self.output_dir / f"summary_{Path(f.path).name}.txt", 'w', encoding='utf-8') as out:
-                        out.write(summary)
-        print("✓ تم تلخيص الملفات الكبيرة")
+            if f.lines <= 150:
+                continue
+            src = self._src(f.path)
+            if src.exists():
+                summaries_dir.mkdir(exist_ok=True)
+                safe = str(f.path).replace(os.sep, "__")
+                (summaries_dir / f"summary_{safe}.txt").write_text(
+                    summarize_file(src), encoding="utf-8"
+                )
+                count += 1
+        if count:
+            self.generated.append("summaries/")
+            console.print(f"  ✓ Summarized {count} large files")
+
+    def write_quality_reports(self):
+        s = self.structure
+        dumps = {
+            "flake8-linting.json": s.flake8,
+            "eslint-linting.json": s.eslint,
+            "complexity_report.json": s.complexity,
+            "maintainability_report.json": s.maintainability,
+            "security_report.json": s.security,
+            "coverage.json": s.coverage,
+        }
+        for name, data in dumps.items():
+            if data:
+                self._write(name, json.dumps(data, indent=2, ensure_ascii=False, default=str))
+        if s.call_graph_cycles:
+            text = "\n".join(" -> ".join(c) for c in s.call_graph_cycles)
+            self._write("call-graph-cycles.txt", text)
+        if s.contributors:
+            lines = [f"{c['name']}: {c['commits']} commits" for c in s.contributors]
+            if s.git_stats and s.git_stats.get("total_commits"):
+                lines.append(f"\nTotal commits: {s.git_stats['total_commits']}")
+                lines.append(f"Last commit: {s.git_stats.get('last_commit', '?')}")
+            self._write("contributors.txt", "\n".join(lines))
+
+    def write_recommendations(self):
+        s = self.structure
+        recs = generate_recommendations(
+            s.metrics,
+            coverage=s.overall_coverage,
+            lint_issues=(len(s.linting or []) + len(s.flake8 or [])),
+            security_issues=_security_counts(s.security),
+            test_ratio=(
+                len(s.architecture.get("Tests", [])) / s.metrics["total_files"]
+                if s.metrics["total_files"] else 0
+            ),
+        )
+        header = (
+            f"# Recommendations — health {s.health['score']}/100 ({s.health['grade']})\n\n"
+            + "\n".join(recs)
+        ) if s.health else "\n".join(recs)
+        self._write("recommendations.txt", header)
+
+    # -------------------------------------------------------------- report
+    def generate_html_report(self):
+        s = self.structure
+        health = s.health or {"score": "—", "grade": "?"}
+        color = _health_color(health.get("score", 0))
+        lang_rows = "".join(
+            f"<tr><td>{lang}</td><td>{n:,}</td><td>"
+            f"<div style='background:#2563eb;height:14px;width:{pct:.0f}px'></div></td></tr>"
+            for lang, n in _top_languages(s)[:15]
+            for pct in [_lang_pct(s, lang)]
+        )
+        insight_items = "".join(f"<li>{i}</li>" for i in generate_key_insights(s))
+        rec_items = ""
+        html = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>{s.name} — SmartRepo Report</title>
+<style>
+ body{{font-family:'Segoe UI',system-ui,sans-serif;margin:0;background:#f8fafc;color:#1e293b}}
+ .wrap{{max-width:960px;margin:2rem auto;padding:0 1rem}}
+ h1{{margin-bottom:0}} .sub{{color:#64748b}}
+ .cards{{display:flex;gap:12px;flex-wrap:wrap;margin:24px 0}}
+ .card{{flex:1;min-width:140px;background:#fff;border-radius:12px;padding:16px;
+       box-shadow:0 1px 3px rgba(0,0,0,.08);text-align:center}}
+ .card b{{font-size:26px;display:block}} .badge{{font-size:42px;font-weight:800;color:{color}}}
+ table{{border-collapse:collapse;width:100%;background:#fff;border-radius:8px;overflow:hidden}}
+ td,th{{padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:left;font-size:14px}}
+ section{{background:#fff;border-radius:12px;padding:20px;margin:16px 0;
+         box-shadow:0 1px 3px rgba(0,0,0,.06)}}
+ footer{{text-align:center;color:#94a3b8;padding:24px;font-size:13px}}
+</style></head><body><div class="wrap">
+<h1>{s.name}</h1>
+<p class="sub">{s.type}{(' · ' + s.framework) if s.framework else ''} ·
+generated {s.generated_at} · SmartRepo v{__version__}</p>
+
+<section><div class="cards">
+ <div class="card"><span class="badge">{health.get('score','—')}</span>Health Score<br>({health.get('grade','—')})</div>
+ <div class="card"><b>{s.metrics['total_files']}</b>Files</div>
+ <div class="card"><b>{s.metrics['total_lines']:,}</b>Lines</div>
+ <div class="card"><b>{s.metrics['total_functions']}</b>Functions</div>
+ <div class="card"><b>{s.metrics['average_complexity']}</b>Avg Complexity</div>
+</div></section>
+
+<section><h2>🗣 Language Distribution</h2>
+<table><tr><th>Language</th><th>Lines</th><th></th></tr>{lang_rows}</table></section>
+
+<section><h2>💡 Key Insights</h2><ul>{insight_items}</ul></section>
+{rec_items}
+<footer>Auto-generated by SmartRepo Analyzer — github.com/ALSRKAL/smartrepo-analyzer</footer>
+</div></body></html>"""
+        self._write("report.html", html)
+
+
+# --------------------------------------------------------------------------
+# Module-level pure helpers (unit-testable, used by DocumentationGenerator)
+# --------------------------------------------------------------------------
+
+CATEGORY_DESCRIPTIONS = {
+    "Models": "Data models, schemas, and database entities",
+    "Controllers": "Request handlers, route controllers, and API endpoints",
+    "Views": "UI components, templates, and presentation layer",
+    "Services": "Business logic, services, and core functionality",
+    "Utils": "Utility functions, helpers, and common tools",
+    "Tests": "Test suites, unit tests, and testing utilities",
+    "Config": "Configuration files and environment settings",
+    "Docs": "Documentation assets",
+    "Other": "Miscellaneous files and additional components",
+}
+
+
+def _health_color(score) -> str:
+    try:
+        score = float(score)
+    except (TypeError, ValueError):
+        return "#64748b"
+    if score >= 80:
+        return "#16a34a"
+    if score >= 60:
+        return "#d97706"
+    return "#dc2626"
+
+
+def _escape_md(text: str) -> str:
+    return text.replace("|", "\\|")
+
+
+def _mid(path: str) -> str:
+    return "N_" + re.sub(r"[^A-Za-z0-9_]", "_", path)
+
+
+def _ascii_tree(architecture: Dict[str, List[str]]) -> str:
+    lines: List[str] = []
+    for category, files in architecture.items():
+        if not files:
+            continue
+        lines.append(f"{'├──' if lines else '┌──'} {category}/ ({len(files)})")
+        for i, fp in enumerate(files[:8]):
+            prefix = "│   ├──" if i < min(len(files), 8) - 1 else "│   └──"
+            lines.append(f"{prefix} {Path(fp).name}")
+        if len(files) > 8:
+            lines.append("│   └── … and more")
+    return "\n".join(lines)
+
+
+def _top_languages(s: ProjectStructure) -> List[Tuple[str, int]]:
+    dist = s.metrics.get("language_distribution", {})
+    return sorted(dist.items(), key=lambda kv: kv[1], reverse=True)
+
+
+def _lang_pct(s: ProjectStructure, lang: str) -> float:
+    dist = s.metrics.get("language_distribution", {})
+    total = sum(dist.values()) or 1
+    return dist.get(lang, 0) / total * 200
+
+
+def generate_project_description(s: ProjectStructure) -> str:
+    desc = f"A {s.type} application"
+    if s.framework:
+        desc += f" built with {s.framework}"
+    mains = [f for f in s.files if any(f.path == ep or f.path.endswith(ep) for ep in s.entry_points)]
+    if mains:
+        desc += f", with its main entry point at `{mains[0].path}`"
+    arch = s.architecture
+    if arch.get("Models"):
+        desc += ", featuring a structured data layer"
+    if arch.get("Services"):
+        desc += " and dedicated business-logic services"
+    if arch.get("Tests"):
+        desc += f". The project includes {len(arch['Tests'])} test file(s)"
+    return desc + "."
+
+
+def generate_structure_description(s: ProjectStructure) -> str:
+    out = ["### Layer Breakdown", ""]
+    for category, files in s.architecture.items():
+        if files:
+            out.append(f"- **{category}** ({len(files)}): {CATEGORY_DESCRIPTIONS[category]}")
+    return "\n".join(out)
+
+
+def generate_dependencies_section(s: ProjectStructure) -> str:
+    sections = []
+    if s.dependencies.get("runtime"):
+        sections.append("### Runtime Dependencies")
+        sections += [f"- `{d}`" for d in s.dependencies["runtime"][:12]]
+        if len(s.dependencies["runtime"]) > 12:
+            sections.append(f"- … and {len(s.dependencies['runtime']) - 12} more")
+    if s.dependencies.get("development"):
+        sections.append("\n### Development Dependencies")
+        sections += [f"- `{d}`" for d in s.dependencies["development"][:8]]
+    return "\n".join(sections) if sections else "No dependency manifests detected."
+
+
+def generate_prerequisites(s: ProjectStructure) -> str:
+    table = {
+        "Node.js": ["- Node.js ≥ 16", "- npm / yarn / pnpm"],
+        "Python": ["- Python 3.8+", "- pip"],
+        "Flutter": ["- Flutter SDK", "- Dart SDK"],
+        "Rust": ["- Rust toolchain", "- Cargo"],
+        "Go": ["- Go 1.19+"],
+        "Java": ["- JDK 11+", "- Maven or Gradle"],
+        "PHP": ["- PHP 8+", "- Composer"],
+        "Ruby": ["- Ruby 3+", "- Bundler"],
+    }
+    return "\n".join(table.get(s.type, ["- See project documentation for requirements"]))
+
+
+def generate_installation_steps(s: ProjectStructure) -> str:
+    steps = ["```bash", f"git clone <repository-url>", f"cd {s.name}", ""]
+    cmds = {
+        "Node.js": ["npm install"],
+        "Python": ["python -m venv venv && source venv/bin/activate", "pip install -r requirements.txt"],
+        "Flutter": ["flutter pub get"],
+        "Rust": ["cargo build --release"],
+        "Go": ["go mod download"],
+        "Java": ["mvn install"],
+        "PHP": ["composer install"],
+        "Ruby": ["bundle install"],
+    }
+    steps.extend(cmds.get(s.type, []))
+    steps.append("```")
+    return "\n".join(steps)
+
+
+def generate_usage_examples_block(s: ProjectStructure) -> str:
+    ex = ["```bash"]
+    ep = s.entry_points[0] if s.entry_points else None
+    starters = {
+        "Node.js": ["npm start"],
+        "Python": [f"python {ep}" if ep else "python -m <package>"],
+        "Flutter": ["flutter run"],
+        "Rust": ["cargo run"],
+        "Go": [f"go run {ep}" if ep else "go run ."],
+        "Java": ["mvn exec:java"],
+    }
+    ex.extend(starters.get(s.type, ["# See project documentation"]))
+    ex.append("```")
+    return "\n".join(ex)
+
+
+def generate_health_section(s: ProjectStructure) -> str:
+    h = s.health
+    if not h:
+        return "_Health analysis unavailable._"
+    rows = "\n".join(f"| {k.title()} | {v} |" for k, v in h.get("breakdown", {}).items())
+    return f"**Score: {h['score']}/100 — Grade {h['grade']}**\n\n| Factor | Status |\n|---|---|\n{rows}"
+
+
+def format_language_distribution(s: ProjectStructure) -> str:
+    total = sum(s.metrics.get("language_distribution", {}).values()) or 1
+    lines = []
+    for lang, n in _top_languages(s):
+        pct = n / total * 100
+        bar = "█" * max(int(pct // 5), 1)
+        lines.append(f"- **{lang}**: {n:,} lines ({pct:.1f}%) {bar}")
+    return "\n".join(lines) or "No data."
+
+
+def generate_key_insights(s: ProjectStructure) -> List[str]:
+    insights: List[str] = []
+    m = s.metrics
+    if m["average_complexity"] > 5:
+        insights.append("High average complexity — refactoring the most complex modules will pay off.")
+    elif m["average_complexity"] < 2:
+        insights.append("Low-complexity, well-structured codebase.")
+
+    tests = s.architecture.get("Tests", [])
+    if m["total_files"]:
+        ratio = len(tests) / m["total_files"]
+        if ratio > 0.3:
+            insights.append("Strong testing culture (>30% of files are tests).")
+        elif ratio < 0.1 and s.architecture.get("Other") is not None:
+            insights.append("Few test files detected — consider expanding unit/integration tests.")
+
+    if s.architecture.get("Models") and s.architecture.get("Controllers"):
+        insights.append("Follows an MVC-like layered architecture.")
+    if s.architecture.get("Services"):
+        insights.append("Service-oriented design detected.")
+
+    if len(m.get("language_distribution", {})) >= 3:
+        insights.append(f"Polyglot project spanning {len(m['language_distribution'])} languages.")
+
+    if m["total_lines"] > 20000:
+        insights.append("Large codebase — modularization would ease maintenance.")
+    elif 0 < m["total_lines"] < 1000:
+        insights.append("Compact project — easy to onboard new contributors.")
+
+    if s.overall_coverage is not None:
+        insights.append(f"Measured test coverage: {s.overall_coverage:.1f}%.")
+
+    cycles = s.call_graph_cycles or []
+    if cycles:
+        insights.append(f"{len(cycles)} circular call chain(s) detected — review callgraph cycles report.")
+
+    sec = _security_counts(s.security)
+    if sec.get("HIGH"):
+        insights.append(f"⚠ {sec['HIGH']} high-severity security finding(s) need attention.")
+    return insights or ["No significant issues detected."]
+
+
+def prompt_architecture_section(s: ProjectStructure) -> str:
+    return "\n".join(
+        f"- **{cat}** ({len(fs)} files): {CATEGORY_DESCRIPTIONS.get(cat, '')}"
+        for cat, fs in s.architecture.items() if fs
+    )
+
+
+def components_prompt_section(s: ProjectStructure) -> str:
+    comps = ["**Largest files:**"]
+    for f in sorted(s.files, key=lambda x: x.lines, reverse=True)[:5]:
+        comps.append(f"- `{f.path}` ({f.lines} ln, {f.language}): {f.summary}")
+    most_complex = sorted(s.files, key=lambda x: x.complexity_score, reverse=True)[:3]
+    if most_complex and most_complex[0].complexity_score > 3:
+        comps.append("\n**Most complex files:**")
+        comps += [f"- `{f.path}` (complexity {f.complexity_score}): {f.summary}" for f in most_complex if f.complexity_score > 3]
+    return "\n".join(comps)
+
+
+def dependencies_prompt_section(s: ProjectStructure) -> str:
+    secs = []
+    if s.dependencies.get("runtime"):
+        secs.append("**Key runtime dependencies**: " + ", ".join(s.dependencies["runtime"][:10]))
+    if s.dependencies.get("development"):
+        secs.append("**Dev tools**: " + ", ".join(s.dependencies["development"][:6]))
+    return "\n".join(secs) if secs else "No major dependencies detected."
+
+
+def language_prompt_section(s: ProjectStructure) -> str:
+    total = sum(s.metrics.get("language_distribution", {}).values()) or 1
+    return "\n".join(
+        f"- **{lang}**: {n / total * 100:.1f}% ({n:,} lines)"
+        for lang, n in _top_languages(s)
+    )
+
+
+def _mermaid_architecture(s: ProjectStructure) -> str:
+    lines = ["graph TD"]
+    node_id = 0
+    lines.append(f"    APP[\"{s.name}\"]")
+    MAX_FILES_PER_CATEGORY = 12
+    for category, files in s.architecture.items():
+        if not files:
+            continue
+        node_id += 1
+        cat_node = f"CAT{node_id}"
+        cls = {"Controllers": "controller", "Models": "model", "Views": "view",
+               "Services": "service", "Tests": "test"}.get(category, "")
+        suffix = f":::{cls}" if cls else ""
+        lines.append(f'    {cat_node}["{category}"]{suffix}')
+        lines.append(f"    APP --> {cat_node}")
+        for fp in files[:MAX_FILES_PER_CATEGORY]:
+            node_id += 1
+            lines.append(f'    F{node_id}["{Path(fp).name}"]')
+            lines.append(f"    {cat_node} --> F{node_id}")
+        if len(files) > MAX_FILES_PER_CATEGORY:
+            node_id += 1
+            lines.append(f'    F{node_id}["… +{len(files) - MAX_FILES_PER_CATEGORY} more"]')
+            lines.append(f"    {cat_node} --> F{node_id}")
+    lines += [
+        "",
+        "    classDef controller fill:#e1f5fe,stroke:#0288d1",
+        "    classDef model fill:#f3e5f5,stroke:#7b1fa2",
+        "    classDef view fill:#e8f5e9,stroke:#388e3c",
+        "    classDef service fill:#fff3e0,stroke:#f57c00",
+        "    classDef test fill:#fce4ec,stroke:#c2185b",
+    ]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
 
 
 class SmartRepoAnalyzer:
-    """Main application class"""
+    """High-level application facade."""
 
     def __init__(self):
-        self.version = "1.0.0"
-        self.console = Console()
+        self.version = __version__
+        self.console = console
 
-    def print_logo(self):
+    def print_logo(self, quiet: bool = False):
+        if quiet:
+            return
         logo = """
-[bold blue]
-   ⚡️🤖📊
-███████╗ ███╗   ███╗ █████╗ ██████╗ ██████╗ ██████╗  ██████╗
-██╔════╝ ████╗ ████║██╔══██╗██╔══██╗██╔══██╗██╔══██╗██╔═══██╗
-███████╗ ██╔████╔██║███████║██████╔╝██████╔╝██║   ██║██████╔╝
-╚════██║ ██║╚██╔╝██║██╔══██║██╔═══╝ ██╔══██╗██║   ██║██╔══██╗
-███████║ ██║ ╚═╝ ██║██║  ██║██║     ██║  ██║╚██████╔╝██║  ██║
-╚══════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝
-[/bold blue]
+███████╗███╗   ███╗ █████╗ ██████╗ ██████╗ ██████╗  ██████╗
+██╔════╝████╗ ████║██╔══██╗██╔══██╗██╔══██╗██╔══██╗██╔═══██╗
+███████╗██╔████╔██║███████║██████╔╝██████╔╝██║   ██║██████╔╝
+╚════██║██║╚██╔╝██║██╔══██║██╔═══╝ ██╔══██╗██║   ██║██╔══██╗
+███████║██║ ╚═╝ ██║██║  ██║██║     ██║  ██║╚██████╔╝██║  ██║
+╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝
 """
-        byline = Text("by alsrkal", style="bold magenta")
-        byline.stylize("bold magenta", 0, 2)
-        byline.stylize("bold yellow", 3, 6)
-        byline.stylize("bold cyan", 6, 9)
         panel = Panel.fit(
-            f"🚀\n{logo}\n{byline}\n🤖 [bold green]AI-Powered Code Analysis[/bold green] ⚡️\n🚀",
-            title="[bold yellow]Welcome to SmartRepo[/bold yellow]",
-            subtitle="[bold blue]Your AI Assistant for Code Intelligence[/bold blue]",
-            border_style="bold magenta",
-            padding=(1, 6),
-            style="on black",
-            box=box.DOUBLE
+            f"[bold blue]{logo}[/]\n"
+            f"🤖 [bold green]AI-Powered Code Analysis[/] ⚡   v{self.version}\n"
+            "[dim]by alsrkal — github.com/ALSRKAL/smartrepo-analyzer[/]",
+            title="[bold yellow]Welcome to SmartRepo[/]",
+            border_style="magenta",
+            box=box.DOUBLE,
         )
         self.console.print(panel, justify="center")
 
-    def run(self, project_path: str, output_dir: Optional[str] = None, enable_complexity: bool = False):
-        self.print_logo()
-        print(f"🚀 SmartRepo Analyzer v{self.version}")
-        print(f"📁 Analyzing project: {project_path}")
-        project_path = Path(project_path).resolve()
-        if not project_path.exists():
-            print(f"❌ Error: Project path '{project_path}' does not exist")
-            return
-        output_path = Path(output_dir) if output_dir else project_path / 'smartrepo-analysis'
+    def run(
+        self,
+        project_path: str,
+        output_dir: Optional[str] = None,
+        enable_complexity: bool = False,
+        ai_api_key: Optional[str] = None,
+        exclude: Optional[List[str]] = None,
+        include: Optional[List[str]] = None,
+        run_linters: bool = True,
+        quiet: bool = False,
+        verbose: bool = False,
+    ) -> Optional[ProjectStructure]:
+        """Analyze ``project_path`` and generate documentation. Returns structure."""
+        self.print_logo(quiet=quiet)
+        resolved = Path(project_path).resolve()
+        if not resolved.exists():
+            console.print(f"[bold red]❌ Error:[/] project path '{project_path}' does not exist")
+            return None
+        output_path = Path(output_dir).resolve() if output_dir else resolved / "smartrepo-analysis"
+
         try:
-            # دعم monorepo: تحليل كل مشروع فرعي
-            subprojects = find_subprojects(project_path)
+            subprojects = find_subprojects(resolved)
             if subprojects:
-                print(f"🔎 Found {len(subprojects)} subprojects (monorepo mode)")
+                console.print(f"[cyan]🔎 Monorepo detected — {len(subprojects)} subproject(s)[/]")
                 for sub in subprojects:
-                    print(f"\n=== Analyzing subproject: {sub} ===")
-                    sub_output = output_path / sub.name
-                    sub_output.mkdir(parents=True, exist_ok=True)
-                    analyzer = CodeAnalyzer(str(sub))
-                    project_structure = analyzer.analyze_project(enable_complexity=enable_complexity)
-                    doc_generator = DocumentationGenerator(project_structure, sub_output)
-                    doc_generator.generate_all()
-                    self._print_summary(project_structure, sub_output)
-                print(f"\n🎉 All subproject analyses saved to: {output_path}")
-                return
-            # Initialize analyzer
-            analyzer = CodeAnalyzer(str(project_path))
-            # Perform analysis
-            project_structure = analyzer.analyze_project(enable_complexity=enable_complexity)
-            # Generate documentation
-            doc_generator = DocumentationGenerator(project_structure, output_path)
-            doc_generator.generate_all()
-            # Print summary
-            self._print_summary(project_structure, output_path)
+                    console.rule(f"[bold]{sub.name}")
+                    sub_out = output_path / sub.name
+                    analyzer = CodeAnalyzer(
+                        str(sub), exclude_patterns=exclude, include_patterns=include,
+                        verbose=verbose,
+                    )
+                    structure = analyzer.analyze_project(
+                        ai_api_key=ai_api_key,
+                        enable_complexity=enable_complexity,
+                        run_linters=run_linters,
+                    )
+                    DocumentationGenerator(structure, sub_out, project_root=sub).generate_all()
+                    self._print_summary(structure, sub_out)
+                console.print(f"\n🎉 All subproject analyses saved to: {output_path}")
+                return None
+
+            analyzer = CodeAnalyzer(
+                str(resolved), exclude_patterns=exclude,
+                include_patterns=include, verbose=verbose,
+            )
+            structure = analyzer.analyze_project(
+                ai_api_key=ai_api_key,
+                enable_complexity=enable_complexity,
+                run_linters=run_linters,
+            )
+            DocumentationGenerator(structure, output_path, project_root=resolved).generate_all()
+            self._print_summary(structure, output_path)
+            return structure
+        except KeyboardInterrupt:
+            console.print("\n[yellow]⚠ Interrupted by user[/]")
+            return None
         except Exception as e:
-            print(f"❌ Error during analysis: {e}")
-            import traceback
-            traceback.print_exc()
+            console.print(f"[bold red]❌ Error during analysis:[/] {e}")
+            if verbose:
+                console.print_exception()
+            return None
 
     def _print_summary(self, structure: ProjectStructure, output_path: Path):
-        """Print analysis summary"""
-        print("\n" + "="*60)
-        print("📊 ANALYSIS COMPLETE")
-        print("="*60)
-        print(f"Project: {structure.name}")
-        print(f"Type: {structure.type}")
-        print(f"Languages: {', '.join(structure.languages)}")
-        print(f"Files analyzed: {structure.metrics['total_files']}")
-        print(f"Total lines: {structure.metrics['total_lines']:,}")
-        print(f"Functions: {structure.metrics['total_functions']}")
-        print(f"Classes: {structure.metrics['total_classes']}")
-        print(f"Average complexity: {structure.metrics['average_complexity']}")
-        print("\n📁 Generated files:")
+        h = structure.health or {}
+        table = Table(title=f"📊 Analysis Complete — {structure.name}",
+                      box=box.ROUNDED, show_header=False)
+        table.add_column(style="bold cyan", width=22)
+        table.add_column(style="white")
+        table.add_row("Type", f"{structure.type}" + (f" · {structure.framework}" if structure.framework else ""))
+        table.add_row("Languages", ", ".join(structure.languages))
+        table.add_row("Files / Lines", f"{structure.metrics['total_files']} / {structure.metrics['total_lines']:,}")
+        table.add_row("Functions / Classes",
+                      f"{structure.metrics['total_functions']} / {structure.metrics['total_classes']}")
+        table.add_row("Avg Complexity", str(structure.metrics["average_complexity"]))
+        if h:
+            color = "green" if h["score"] >= 80 else "yellow" if h["score"] >= 55 else "red"
+            table.add_row("Health Score", f"[{color}]{h['score']}/100 ({h['grade']})[/]")
+        if structure.overall_coverage is not None:
+            table.add_row("Test Coverage", f"{structure.overall_coverage:.1f}%")
+        sec = _security_counts(structure.security)
+        if sec and (sec["HIGH"] or sec["MEDIUM"]):
+            table.add_row("Security", f"{sec['HIGH']} high · {sec['MEDIUM']} medium")
+        self.console.print(table)
 
-        output_files = [
-            'readme-enhanced.md',
-            'architecture.mmd',
-            'ai-summary.json',
-            'prompt-ready.md'
+        files_list = Table(box=box.SIMPLE, show_header=False)
+        files_list.add_column(style="green")
+        files_list.add_column(style="dim")
+        key_outputs = [
+            "readme-enhanced.md", "report.html", "ai-summary.json",
+            "prompt-ready.md", "recommendations.txt",
         ]
-
-        for filename in output_files:
-            file_path = output_path / filename
-            if file_path.exists():
-                size = file_path.stat().st_size
-                print(f"  ✓ {filename} ({size:,} bytes)")
+        for name in key_outputs:
+            fp = output_path / name
+            if fp.exists():
+                files_list.add_row(f"  ✓ {name}", f"{fp.stat().st_size:,} bytes")
             else:
-                print(f"  ⚠ {filename} (not generated)")
+                files_list.add_row(f"  ⚠ {name}", "not generated")
+        self.console.print(files_list)
+        self.console.print(f"📁 All outputs: [underline]{output_path}[/]\n")
 
-        print(f"\n🎉 All files saved to: {output_path}")
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
-def create_requirements_txt():
-    """Create requirements.txt file"""
-    requirements = """# SmartRepo Analyzer Requirements
+REQUIREMENTS_CONTENT = """# SmartRepo Analyzer requirements
+rich>=13.0
+pygments>=2.15
 pyyaml>=6.0
 toml>=0.10.2
-pygments>=2.10.0
-requests>=2.25.0
-click>=8.0.0
-pathlib2>=2.3.6
-dataclasses>=0.6; python_version<"3.7"
+networkx>=3.0        # optional: better cycle detection (pure-python fallback exists)
+# Optional extras:
+# openai>=1.0        # --ai-key smart summarization
+# radon              # --complexity analysis
+# bandit             # security scan
+# pylint, flake8     # python linting
+# eslint             # JS/TS linting (npm)
+# pillow             # GUI image support
 """
 
-    with open('requirements.txt', 'w') as f:
-        f.write(requirements)
-    print("📝 requirements.txt created")
+
+def create_requirements_txt(path: str = "requirements.txt"):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(REQUIREMENTS_CONTENT)
+    console.print(f"📝 [green]'{path}' created[/]")
 
 
-def main():
-    """Main entry point"""
+def launch_gui():
+    """Start the desktop GUI, failing gracefully when unavailable."""
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from gui.main import MainApp
+    except ImportError as e:
+        console.print(f"[bold red]GUI unavailable:[/] {e}")
+        console.print("Install GUI requirements: pip install pillow markdown")
+        sys.exit(1)
+    app = MainApp()
+    app.mainloop()
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="SmartRepo - AI-Powered Code Analysis and Documentation Tool",
+        prog="smartrepo_analyzer",
+        description="SmartRepo Analyzer — AI-Powered Code Analysis & Documentation Tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
+        epilog="""examples:
   python smartrepo_analyzer.py analyze ./my-project
-  python smartrepo_analyzer.py analyze /path/to/project --output ./analysis
-  python smartrepo_analyzer.py create-requirements
-  python smartrepo_analyzer.py help
-        """
+  python smartrepo_analyzer.py analyze . --complexity --exclude "*.min.js" "dist/*"
+  python smartrepo_analyzer.py analyze ./proj --ai-key sk-... -o ./analysis
+  python smartrepo_analyzer.py gui
+""",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    sub = parser.add_subparsers(dest="command")
 
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    ap = sub.add_parser("analyze", help="Analyze a code project and generate reports")
+    ap.add_argument("project_path", help="Path to the project directory")
+    ap.add_argument("-o", "--output", help="Custom output directory")
+    ap.add_argument("-v", "--verbose", action="store_true", help="Verbose diagnostics")
+    ap.add_argument("-q", "--quiet", action="store_true", help="Hide banner/logo output")
+    ap.add_argument("--complexity", action="store_true",
+                    help="Enable detailed complexity/maintainability analysis (radon)")
+    ap.add_argument("--no-lint", action="store_true", help="Skip pylint/flake8/eslint passes")
+    ap.add_argument("--ai-key", default=os.environ.get("SMARTREPO_AI_KEY"),
+                    help="OpenAI API key for smart summarization (or env SMARTREPO_AI_KEY)")
+    ap.add_argument("--exclude", nargs="*", default=[],
+                    help='Glob patterns to exclude, e.g. "*.min.js" "docs/*"')
+    ap.add_argument("--include", nargs="*", default=[],
+                    help="Glob patterns restricting which files are parsed")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="Parallel workers for file analysis (default: CPU count)")
 
-    # Analyze command
-    analyze_parser = subparsers.add_parser('analyze', help='Analyze a code project')
-    analyze_parser.add_argument('project_path', help='Path to the project directory')
-    analyze_parser.add_argument('--output', '-o', help='Output directory for generated files')
-    analyze_parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
-    analyze_parser.add_argument('--ai-key', type=str, help='OpenAI API key for smart summarization (optional)')
-    analyze_parser.add_argument('--complexity', action='store_true', help='Enable detailed complexity analysis (slower)')
+    sub.add_parser("gui", help="Launch the graphical interface")
+    sub.add_parser("create-requirements", help="(Re)create requirements.txt")
+    sub.add_parser("version", help="Print version")
+    sub.add_parser("help", help="Show detailed help")
+    return parser
 
-    # Create requirements command
-    req_parser = subparsers.add_parser('create-requirements', help='Create requirements.txt file')
 
-    # Help command
-    help_parser = subparsers.add_parser('help', help='Show help and usage instructions')
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
-    args = parser.parse_args()
-
-    if args.command == 'analyze':
-        analyzer = SmartRepoAnalyzer()
-        analyzer.run(args.project_path, args.output, enable_complexity=args.complexity)
-    elif args.command == 'create-requirements':
+    if args.command == "analyze":
+        app = SmartRepoAnalyzer()
+        result = app.run(
+            args.project_path,
+            output_dir=args.output,
+            enable_complexity=args.complexity,
+            ai_api_key=args.ai_key,
+            exclude=args.exclude,
+            include=args.include,
+            run_linters=not args.no_lint,
+            quiet=args.quiet,
+            verbose=args.verbose,
+        )
+        return 0 if result is not None else 1
+    if args.command == "gui":
+        launch_gui()
+        return 0
+    if args.command == "create-requirements":
         create_requirements_txt()
-    elif args.command == 'help' or args.command is None:
-        print("\033[1;36m\nWelcome to SmartRepo!\033[0m")
-        print("\033[1;33mAI-Powered Code Analysis and Documentation Tool\033[0m\n")
-        print("Usage:")
-        print("  python smartrepo_analyzer.py <command> [options]\n")
-        print("Available commands:")
-        print("  analyze <project_path>   Analyze a code project and generate reports")
-        print("  create-requirements      Create requirements.txt file for dependencies")
-        print("  help                     Show this help message\n")
-        print("Options for 'analyze':")
-        print("  --output, -o <dir>       Output directory for generated files")
-        print("  --verbose, -v            Enable verbose output")
-        print("  --ai-key <key>           OpenAI API key for smart summarization (optional)\n")
-        print("Examples:")
-        print("  python smartrepo_analyzer.py analyze ./my-project")
-        print("  python smartrepo_analyzer.py analyze ./my-project --output ./analysis")
-        print("  python smartrepo_analyzer.py analyze ./my-project --ai-key sk-...\n")
-        print("For more details, see the README.md or run 'python smartrepo_analyzer.py help'\n")
-    else:
-        parser.print_help()
+        return 0
+    if args.command == "version":
+        console.print(f"SmartRepo Analyzer v{__version__}")
+        return 0
+    # help / no command
+    print_help()
+    return 0
+
+
+def print_help():
+    console.print(Panel.fit(
+        f"""[bold cyan]Welcome to SmartRepo Analyzer v{__version__}![/]
+[dim]AI-Powered Code Analysis and Documentation Tool — أداة ذكية لتحليل الأكواد وتوليد التوثيق[/]
+
+[bold]Commands[/]
+  [green]analyze[/] <path>          Analyze a project and generate full reports
+  [green]gui[/]                     Launch the desktop GUI
+  [green]create-requirements[/]     Recreate requirements.txt
+  [green]version[/]                 Show version information
+  [green]help[/]                    This message
+
+[bold]Analyze options[/]
+  -o, --output DIR        Output directory (default: ./smartrepo-analysis)
+  -v / -q                 Verbose diagnostics / quiet mode
+  --complexity            Radon complexity + maintainability analysis
+  --no-lint               Skip pylint/flake8/eslint
+  --ai-key KEY            OpenAI summarization (env: SMARTREPO_AI_KEY)
+  --exclude PAT...        Glob patterns to skip
+  --include PAT...        Only analyze matching files
+  --workers N             Parallel file workers
+
+[bold]Examples[/]
+  python smartrepo_analyzer.py analyze .
+  python smartrepo_analyzer.py analyze ~/proj --complexity --exclude "*.min.js"
+  python smartrepo_analyzer.py analyze . -o ./analysis --workers 4""",
+        title="[bold yellow]SmartRepo[/]", border_style="blue",
+    ))
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

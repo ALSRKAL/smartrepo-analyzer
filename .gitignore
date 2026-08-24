@@ -1,8 +1,29 @@
-# إضافة استثناءات لملفات pycache وملفات التغليف
+# ── Python ──────────────────────────────────────────────
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+*.egg
+
+# ── Environments ────────────────────────────────────────
+venv/
+.venv/
+env/
+.env
+virtualenv/
+
+# ── Tooling caches ──────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.jython_cache/
+
+# ── Build artifacts ─────────────────────────────────────
 dist/
 build/
 *.spec
@@ -11,7 +32,20 @@ build/
 *.dmg
 *.deb
 *.rpm
-*.egg-info/
-# استثناء ملفات النتائج المؤقتة
+
+# ── Analyzer outputs (never commit generated reports) ───
+smartrepo-analysis/
+self-analysis/
+call-graph.mmd
+coverage.xml
 *.log
 *.tmp
+
+# ── Editors / OS ────────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ── GUI assets are tracked, but local experiments aren't ┐
+# (add specific files under image/ with git add -f)       ┘

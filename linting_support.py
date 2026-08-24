@@ -1,25 +1,45 @@
+"""Pylint integration (batched).
+
+تشغيل أداة pylint على دفعات من الملفات بدلًا من عملية لكل ملف.
+"""
+
+from __future__ import annotations
+
+import json
 import subprocess
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
-def run_pylint_on_files(files: List[Path]) -> List[Dict]:
+from tool_runner import DEFAULT_BATCH_SIZE, run_command, tool_available
+
+
+def run_pylint_on_files(
+    files: List[Path], batch_size: int = DEFAULT_BATCH_SIZE
+) -> List[Dict]:
+    """Run pylint once per batch and merge JSON reports.
+
+    يعيد قائمة بالتحذيرات والأخطاء التي اكتشفها pylint.
     """
-    تشغيل pylint على قائمة من الملفات وإرجاع النتائج (كل نتيجة عبارة عن dict)
-    """
-    results = []
-    for file in files:
-        proc = subprocess.run([
-            'pylint', str(file), '--output-format=json', '--score=n'
-        ], capture_output=True, text=True)
-        if proc.returncode == 0 or proc.returncode == 32:  # 32: usage error, 0: no error
-            try:
-                import json
-                lint_results = json.loads(proc.stdout)
-                for item in lint_results:
-                    item['file'] = str(file)
-                results.extend(lint_results)
-            except Exception:
-                continue
-        else:
-            results.append({'file': str(file), 'error': proc.stderr})
-    return results 
+    results: List[Dict] = []
+    if not files or not tool_available("pylint"):
+        return results
+
+    def parse(proc: subprocess.CompletedProcess, batch: List[Path]):
+        try:
+            items = json.loads(proc.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return
+        for item in items:
+            if isinstance(item, dict):
+                results.append(item)
+
+    def build_cmd(batch: List[Path]) -> List[str]:
+        return ["pylint", "--output-format=json", "--score=n", *[str(f) for f in batch]]
+
+    for start in range(0, len(files), batch_size):
+        batch = files[start : start + batch_size]
+        proc = run_command(build_cmd(batch))
+        # pylint exits non-zero whenever it emits messages; that is expected.
+        if proc is not None:
+            parse(proc, batch)
+    return results

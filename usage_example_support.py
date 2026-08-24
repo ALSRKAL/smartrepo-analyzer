@@ -1,24 +1,41 @@
+"""Extract usage examples from docstrings and test functions.
+
+استخراج أمثلة الاستخدام من ملفات Python: من دوال الاختبار ومن
+الـ docstrings التي تحتوي على كود توضيحي.
+"""
+
+from __future__ import annotations
+
 import ast
 from pathlib import Path
 from typing import List
 
+
 def extract_usage_examples(py_files: List[Path]) -> List[str]:
+    """Collect examples from ``test_*`` functions and example docstrings.
+
+    يعيد قائمة أسطر تصف أمثلة الاستخدام المكتشفة في المشروع.
     """
-    استخراج أمثلة استخدام من ملفات Python (من دوال test_ أو docstrings)
-    """
-    examples = []
+    examples: List[str] = []
     for file in py_files:
         try:
-            tree = ast.parse(file.read_text(encoding='utf-8'))
-            for node in ast.walk(tree):
-                # أمثلة من دوال test_
-                if isinstance(node, ast.FunctionDef) and node.name.startswith('test_'):
-                    examples.append(f"من {file.name}: {node.name}() -> {ast.get_docstring(node) or ''}")
-                # أمثلة من docstring للكلاس أو الدالة
-                if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-                    doc = ast.get_docstring(node)
-                    if doc and 'example' in doc.lower():
-                        examples.append(f"من {file.name}: {node.name} -> {doc}")
-        except Exception:
+            tree = ast.parse(file.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, SyntaxError, ValueError):
             continue
-    return examples 
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
+                "test_"
+            ):
+                doc = ast.get_docstring(node) or ""
+                first = doc.strip().splitlines()[0] if doc.strip() else ""
+                examples.append(f"From {file.name}: {node.name}()  {first}".rstrip())
+            doc = ast.get_docstring(node)
+            if doc and "example" in doc.lower() and ">>>" in doc:
+                # pull the doctest lines themselves
+                snippets = [ln for ln in doc.splitlines() if ln.strip().startswith(">>>")]
+                if snippets:
+                    joined = " | ".join(s.strip().lstrip(">").strip() for s in snippets[:3])
+                    examples.append(f"From {file.name}: {node.name} -> {joined}")
+    return examples
