@@ -6,10 +6,10 @@
 **أداة ذكية لتحليل الأكواد وتوليد التوثيق**
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-60%20passing-brightgreen)](https://github.com/ALSRKAL/smartrepo-analyzer/actions)
+[![Tests](https://img.shields.io/badge/tests-78%20passing-brightgreen)](https://github.com/ALSRKAL/smartrepo-analyzer/actions)
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)](https://github.com/ALSRKAL/smartrepo-analyzer/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0-purple)](#-changelog--سجل-التغييرات)
+[![Version](https://img.shields.io/badge/version-12.0.1-purple)](#-changelog--سجل-التغييرات)
 
 Analyze any codebase → get **health scores**, **architecture diagrams**, **security reports**, and **AI-ready documentation** in seconds.
 حلّل أي مشروع برمجي واحصل على **درجات صحة**، **مخططات معمارية**، **تقارير أمنية**، و**توثيق جاهز للذكاء الاصطناعي** خلال ثوانٍ.
@@ -49,8 +49,14 @@ LLMs can consume immediately.
 
 | | Feature / الميزة |
 |---|---|
+| 🔬 | **Deep per-function analysis for every language** — not just Python: function signatures, argument counts, line numbers and **per-function cyclomatic complexity** for Go, Rust, Java, Kotlin, C#, PHP, Ruby, Dart, Swift, Scala, JS/TS, C/C++ |
+| 🛣️ | **HTTP API map** — auto-detects REST endpoints from Flask/FastAPI/Express/Spring/Gin decorators & routers |
+| 📚 | **Documentation coverage** — % of public symbols carrying docstrings/JSDoc/rustdoc |
+| 📝 | **TODO/FIXME/HACK tracking** across the whole codebase |
+| 🔥 | **Complexity hotspots** — the exact functions you should refactor first |
+| 🧩 | **Public API surface extraction** — exported symbols per language (Go capitals, Rust `pub`, JS `export`, Java `public`…) |
 | 🔍 | **20+ languages**: Python, JavaScript/TypeScript, React, Go, Rust, Java, Kotlin, Dart, PHP, Ruby, C/C++, C#, Swift, Scala… |
-| 🏥 | **Health score (0–100)** combining complexity, tests, linting, security and coverage |
+| 🏥 | **Health score (0–100)** combining complexity, tests, linting, security, coverage and documentation |
 | 🛡️ | **Security scanning** via bandit (batched — very fast) |
 | 🌀 | **Cyclomatic complexity** via radon + maintainability index |
 | 🕸️ | **Dependency graphs** between files + call-graph cycle detection |
@@ -249,10 +255,11 @@ Use <code>--exclude node_modules/* dist/*</code>, reduce <code>--workers</code>,
 ```
 smartrepo-analyzer/
 ├── smartrepo_analyzer.py      # Core engine + CLI
+├── deep_analysis.py           # Deep multi-language parsers
 ├── tool_runner.py             # Batched subprocess helpers
 ├── *_support.py               # Analysis modules (12 modules)
 ├── gui/                       # Desktop application (Tkinter)
-├── tests/                     # Pytest suite (60+ tests)
+├── tests/                     # Pytest suite (78+ tests)
 └── .github/workflows/ci.yml   # Multi-platform CI
 ```
 
@@ -297,8 +304,14 @@ MIT — see [LICENSE](LICENSE).
 
 | | الميزة |
 |---|---|
+| 🔬 | **تحليل عميق لكل دالة في كل اللغات** — وليس بايثون فقط: توقيعات الدوال، عدد المعاملات، أرقام الأسطر، و**تعقيد سيكلومي لكل دالة** في Go وRust وJava وKotlin وC# وPHP وRuby وDart وSwift وScala وJS/TS |
+| 🛣️ | **خريطة نقاط النهاية REST** — اكتشاف تلقائي من Flask/FastAPI/Express/Spring/Gin |
+| 📚 | **نسبة التغطية التوثيقية** — نسبة الرموز العامة الموثقة بـ docstring أو JSDoc أو rustdoc |
+| 📝 | **تتبع TODO/FIXME/HACK** عبر المشروع كاملًا |
+| 🔥 | **النقاط الساخنة للتعقيد** — الدوال التي يجب إعادة هيكلتها أولًا |
+| 🧩 | **استخراج الواجهة البرمجية العامة** — الرموز المصدَّرة بلغة كل مشروع (حروف كبيرة في Go، `pub` في Rust، `export` في JS…) |
 | 🔍 | **أكثر من ٢٠ لغة**: Python وJavaScript/TypeScript وGo وRust وJava وDart وPHP وغيرها |
-| 🏥 | **درجة صحة من ١٠٠** تجمع التعقيد والاختبارات والأمان والتغطية |
+| 🏥 | **درجة صحة من ١٠٠** تجمع التعقيد والاختبارات والأمان والتغطية والتوثيق |
 | 🛡️ | **فحص أمني** بأداة bandit بتشغيل دفعات سريعة |
 | 🌀 | **تحليل التعقيد السيكلومي** ومؤشر قابلية الصيانة عبر radon |
 | 🕸️ | **رسوم تبعيات** بين الملفات وكشف حلقات النداء الدائرية |

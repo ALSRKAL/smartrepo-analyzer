@@ -38,7 +38,7 @@ class TestAnalyzeCommand:
 
     def test_version_flag(self):
         proc = run_cli("--version")
-        assert "2.0.0" in proc.stdout + proc.stderr
+        assert "12.0.1" in proc.stdout + proc.stderr
 
 
 class TestHelpCommand:

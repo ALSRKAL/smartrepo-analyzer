@@ -61,6 +61,7 @@ from complexity_support import (
     analyze_maintainability_with_radon,
 )
 from coverage_support import get_overall_coverage, parse_coverage_xml
+from deep_analysis import ClassInfo, FunctionInfo, parse_source
 from framework_detection_support import detect_frameworks
 from git_support import get_contributors, get_git_stats
 from linting_support import run_pylint_on_files
@@ -73,7 +74,7 @@ from tool_runner import tool_available
 from uml_support import generate_mermaid_class_diagram
 from usage_example_support import extract_usage_examples
 
-__version__ = "2.0.0"
+__version__ = "12.0.1"
 ANALYZER_VERSION = __version__
 
 console = Console()
@@ -148,6 +149,17 @@ class FileInfo:
     summary: str
     code_lines: int = 0
     docstring: str = ""
+    functions_detail: List[FunctionInfo] = field(default_factory=list)
+    classes_detail: List[ClassInfo] = field(default_factory=list)
+    todos: int = 0
+    endpoints: List[str] = field(default_factory=list)
+
+    @property
+    def documented_pct(self) -> float:
+        syms = [f for f in self.functions_detail if not f.name.startswith("_")]
+        if not syms:
+            return 100.0 if self.docstring else 0.0
+        return 100.0 * sum(1 for f in syms if f.documented) / len(syms)
 
 
 @dataclass
@@ -194,11 +206,12 @@ def compute_health_score(
     security_counts: Optional[Dict[str, int]] = None,
     overall_coverage: Optional[float] = None,
     avg_maintainability: Optional[float] = None,
+    documented_pct: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Compute an overall project health score (0-100) plus letter grade.
 
     يحسب درجة صحة المشروع الإجمالية من 100 مع تقدير حرفي، بناءً على
-    التعقيد، التغطية الاختبارية، مشاكل الفحص الثابت، والأمان.
+    التعقيد، التغطية الاختبارية، مشاكل الفحص الثابت، الأمان، والتوثيق.
     """
     score = 100.0
     breakdown: Dict[str, str] = {}
@@ -270,6 +283,18 @@ def compute_health_score(
     if avg_maintainability is not None and avg_maintainability < 40:
         score -= 8
         breakdown["maintainability"] = f"MI {avg_maintainability:.0f} low −8"
+
+    if documented_pct is not None:
+        if documented_pct >= 60:
+            bonus = 4
+            score += bonus
+            breakdown["documentation"] = f"{documented_pct:.0f}% symbols documented +{bonus}"
+        elif documented_pct < 20:
+            pen = 5
+            score -= pen
+            breakdown["documentation"] = f"{documented_pct:.0f}% documented −{pen}"
+        else:
+            breakdown["documentation"] = f"{documented_pct:.0f}% documented"
 
     score = max(0.0, min(100.0, score))
     if score >= 90:
@@ -625,21 +650,13 @@ class CodeAnalyzer:
             lines = content.count("\n") + (0 if content.endswith("\n") or not content else 1)
             code_lines = sum(1 for ln in content.splitlines() if ln.strip())
 
-            functions: List[str] = []
-            classes: List[str] = []
-            imports: List[str] = []
-            docstring = ""
-            complexity_score = 1
-
-            if language == "Python":
-                res = self._analyze_python_file(content)
-                functions, classes = res["functions"], res["classes"]
-                imports, complexity_score = res["imports"], res["complexity"]
-                docstring = res["docstring"]
-            elif language in ("JavaScript", "TypeScript"):
-                res = self._analyze_js_ts_file(content)
-                functions, classes, imports = res["functions"], res["classes"], res["imports"]
-                complexity_score += len(re.findall(r"\b(if|for|while)\s*\(", content)) // 4
+            # ---- unified deep analysis for every language ----------------
+            parsed = parse_source(ext, language, content)
+            functions = [f.name for f in parsed.functions_detail]
+            classes = [c.name for c in parsed.classes_detail]
+            imports = parsed.imports
+            complexity_score = parsed.complexity
+            docstring = parsed.docstring
 
             summary = self._generate_file_summary(file_path, language, functions, classes)
 
@@ -655,101 +672,14 @@ class CodeAnalyzer:
                 summary=summary,
                 code_lines=code_lines,
                 docstring=docstring[:300],
+                functions_detail=parsed.functions_detail,
+                classes_detail=parsed.classes_detail,
+                todos=parsed.todos,
+                endpoints=parsed.endpoints,
             )
         except Exception as e:  # never let one bad file kill the run
             self._log(f"Error analyzing {file_path}: {e}")
             return None
-
-    def _analyze_python_file(self, content: str) -> Dict[str, Any]:
-        """Deep AST analysis of Python source.
-
-        Cyclomatic complexity is computed per function without descending
-        into nested definitions, so nothing is ever counted twice.
-        """
-        try:
-            tree = ast.parse(content)
-        except SyntaxError:
-            return {"functions": [], "classes": [], "imports": [], "complexity": 1, "docstring": ""}
-
-        functions: List[str] = []
-        classes: List[str] = []
-        imports: Set[str] = set()
-        docstring = ast.get_docstring(tree) or ""
-
-        decision_nodes = (
-            ast.If, ast.For, ast.While, ast.ExceptHandler,
-            ast.Assert, ast.IfExp, ast.comprehension,
-        )
-
-        def local_complexity(func_node: ast.AST) -> int:
-            score = 1
-            stack = list(ast.iter_child_nodes(func_node))
-            while stack:
-                node = stack.pop()
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                    continue  # nested callables are scored on their own
-                if isinstance(node, decision_nodes):
-                    score += 1
-                elif isinstance(node, ast.BoolOp):
-                    score += max(len(node.values) - 1, 0)
-                stack.extend(ast.iter_child_nodes(node))
-            return score
-
-        total_decision_points = 0
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                prefix = "async " if isinstance(node, ast.AsyncFunctionDef) else ""
-                functions.append(prefix + node.name)
-                total_decision_points += local_complexity(node)
-            elif isinstance(node, ast.ClassDef):
-                classes.append(node.name)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports.add(alias.name)
-                    imports.add(alias.name.split(".")[0])
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    imports.add(node.module)
-                    imports.add(node.module.split(".")[0])
-
-        return {
-            "functions": functions,
-            "classes": classes,
-            "imports": sorted(imports),
-            "complexity": max(total_decision_points, 1),
-            "docstring": docstring,
-        }
-
-    def _analyze_js_ts_file(self, content: str) -> Dict[str, Any]:
-        """Regex-based JS/TS structural analysis."""
-        func_patterns = [
-            r"function\s+(\w+)",
-            r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>",
-            r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?function\b",
-            r"(\w+)\s*:\s*(?:async\s+)?function\b",
-            r"class\s+(\w+)\s+extends",
-        ]
-        functions: List[str] = []
-        for pattern in func_patterns[:-1]:
-            functions.extend(re.findall(pattern, content))
-        methods = re.findall(r"^\s{2,}(?:async\s+)?(\w+)\s*\([^)]*\)\s*\{", content, re.M)
-        functions.extend(m for m in methods if m not in ("if", "for", "while", "switch", "catch"))
-
-        classes = re.findall(r"\bclass\s+(\w+)", content)
-        imports: List[str] = []
-        for pattern in (
-            r"import[\s\S]*?from\s+['\"]([^'\"]+)['\"]",
-            r"import\s+['\"]([^'\"]+)['\"]",
-            r"require\(\s*['\"]([^'\"]+)['\"]\s*\)",
-            r"export\s+[\s\S]*?from\s+['\"]([^'\"]+)['\"]",
-        ):
-            imports.extend(re.findall(pattern, content))
-
-        return {
-            "functions": sorted(set(functions)),
-            "classes": sorted(set(classes)),
-            "imports": sorted(set(i.split("/")[0] for i in imports if i and not i.startswith("."))),
-        }
 
     def _generate_file_summary(
         self, file_path: Path, language: str, functions: List[str], classes: List[str]
@@ -901,6 +831,7 @@ class CodeAnalyzer:
             security_counts=_security_counts(security_results),
             overall_coverage=overall_coverage,
             avg_maintainability=_avg_maintainability(maintainability_results),
+            documented_pct=metrics.get("documented_symbols_pct"),
         )
         self.project_structure = structure
         elapsed = time.time() - started
@@ -981,6 +912,24 @@ class CodeAnalyzer:
             lang_dist[fi.language] += fi.lines
 
         largest = max(files, key=lambda f: f.lines).path if files else None
+
+        # ---- deep-analysis aggregates ------------------------------------
+        all_funcs = [(fi, fd) for fi in files for fd in fi.functions_detail]
+        documented_syms = sum(1 for fi in files for fd in fi.functions_detail
+                              if not fd.name.startswith("_") and fd.documented)
+        public_syms = sum(1 for fi in files for fd in fi.functions_detail
+                          if not fd.name.startswith("_"))
+        doc_pct = round(100.0 * documented_syms / public_syms, 1) if public_syms else None
+
+        long_functions = [
+            {"file": fi.path, "name": fd.name, "complexity": fd.complexity, "args": fd.args}
+            for fi, fd in all_fds_sorted(all_funcs)
+            if fd.complexity >= 10 or fd.args > 5
+        ][:15]
+
+        endpoints = sorted({ep for fi in files for ep in fi.endpoints})
+        total_todos = sum(fi.todos for fi in files)
+
         return {
             "total_files": total_files,
             "total_lines": total_lines,
@@ -994,6 +943,14 @@ class CodeAnalyzer:
             "language_distribution": dict(lang_dist),
             "largest_file": largest,
             "total_size_kb": round(sum(f.size for f in files) / 1024, 1),
+            # intelligence layer
+            "documented_symbols_pct": doc_pct,
+            "total_todos": total_todos,
+            "total_endpoints": len(endpoints),
+            "avg_function_args": round(
+                sum(fd.args for _, fd in all_funcs) / len(all_funcs), 2
+            ) if all_funcs else 0,
+            "complex_hotspots": long_functions,
         }
 
     def _build_file_dependency_graph(self, files: List[FileInfo]) -> Dict[str, List[str]]:
@@ -1035,6 +992,11 @@ def _security_counts(security: Optional[Dict[str, list]]) -> Dict[str, int]:
     return counts
 
 
+def all_fds_sorted(pairs):
+    """Sort (FileInfo, FunctionInfo) pairs by complexity, hottest first."""
+    return sorted(pairs, key=lambda p: p[1].complexity, reverse=True)
+
+
 def _avg_maintainability(maintainability: Optional[Dict[str, Any]]) -> Optional[float]:
     """Average Maintainability Index across files (None when unavailable)."""
     if not maintainability:
@@ -1048,6 +1010,16 @@ def _avg_maintainability(maintainability: Optional[Dict[str, Any]]) -> Optional[
         elif isinstance(entry, (int, float)):
             values.append(entry)
     return round(sum(values) / len(values), 1) if values else None
+
+
+def _project_endpoints(s: ProjectStructure) -> List[str]:
+    """Deduplicated HTTP endpoint list across the whole project."""
+    seen: List[str] = []
+    for fi in s.files:
+        for ep in fi.endpoints:
+            if ep not in seen:
+                seen.append(ep)
+    return seen[:120]
 
 
 # ---------------------------------------------------------------------------
@@ -1254,9 +1226,35 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
                     "lines": f.lines,
                     "code_lines": f.code_lines,
                     "complexity": f.complexity_score,
+                    "documented_pct": round(f.documented_pct, 1),
+                    "todos": f.todos,
                 }
                 for f in sorted(s.files, key=lambda x: x.lines, reverse=True)[:30]
             ],
+            "code_intelligence": {
+                "endpoints": _project_endpoints(s),
+                "complex_hotspots": s.metrics.get("complex_hotspots", []),
+                "documented_symbols_pct": s.metrics.get("documented_symbols_pct"),
+                "total_todos": s.metrics.get("total_todos", 0),
+                "avg_function_args": s.metrics.get("avg_function_args", 0),
+                "top_classes": [
+                    {
+                        "file": f.path,
+                        "name": c.name,
+                        "kind": c.kind,
+                        "bases": c.bases,
+                        "methods": len(c.methods) if c.methods else None,
+                    }
+                    for f in s.files
+                    for c in f.classes_detail[:8]
+                ][:40],
+                "public_api_surface": [
+                    {"file": fi.path, "name": fd.name, "args": fd.args}
+                    for fi in s.files
+                    for fd in fi.functions_detail
+                    if fd.exported
+                ][:80],
+            },
             "call_graph_cycles": s.call_graph_cycles,
             "key_insights": generate_key_insights(s),
             "generated_at": s.generated_at,
@@ -1297,6 +1295,14 @@ This is a **{s.type}** project ({s.framework or 'no dominant framework'}) with \
 - **Total Functions**: {s.metrics['total_functions']}
 - **Total Classes**: {s.metrics['total_classes']}
 - **Testing**: {'Well-tested' if s.architecture.get('Tests') else 'Limited testing'}
+- **Documentation**: {s.metrics.get('documented_symbols_pct', '—')}% of public symbols documented
+- **TODO/FIXME markers**: {s.metrics.get('total_todos', 0)}
+
+## HTTP API Surface
+{endpoints_prompt_section(s)}
+
+## Complexity Hotspots (refactor candidates)
+{hotspots_prompt_section(s)}
 
 ## Dependencies Context
 {dependencies_prompt_section(s)}
@@ -1397,6 +1403,13 @@ This is a **{s.type}** project ({s.framework or 'no dominant framework'}) with \
         )
         insight_items = "".join(f"<li>{i}</li>" for i in generate_key_insights(s))
         rec_items = ""
+        endpoints = _project_endpoints(s)
+        endpoint_rows = "".join(f"<tr><td><code>{ep}</code></td></tr>" for ep in endpoints[:60])
+        hotspot_rows = "".join(
+            f"<tr><td><code>{h['name']}</code></td><td>{h['file']}</td>"
+            f"<td>{h['complexity']}</td><td>{h.get('args', 0)}</td></tr>"
+            for h in (s.metrics.get("complex_hotspots") or [])[:10]
+        )
         html = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <title>{s.name} — SmartRepo Report</title>
@@ -1430,7 +1443,8 @@ generated {s.generated_at} · SmartRepo v{__version__}</p>
 <table><tr><th>Language</th><th>Lines</th><th></th></tr>{lang_rows}</table></section>
 
 <section><h2>💡 Key Insights</h2><ul>{insight_items}</ul></section>
-{rec_items}
+{f'<section><h2>🛣️ API Endpoints ({len(endpoints)})</h2><table><tr><th>Method &amp; Path</th></tr>{endpoint_rows}</table></section>' if endpoints else ''}
+{f'<section><h2>🔥 Complexity Hotspots</h2><table><tr><th>Function</th><th>File</th><th>Complexity</th><th>Args</th></tr>{hotspot_rows}</table></section>' if hotspot_rows else ''}
 <footer>Auto-generated by SmartRepo Analyzer — github.com/ALSRKAL/smartrepo-analyzer</footer>
 </div></body></html>"""
         self._write("report.html", html)
@@ -1609,6 +1623,34 @@ def generate_key_insights(s: ProjectStructure) -> List[str]:
     elif m["average_complexity"] < 2:
         insights.append("Low-complexity, well-structured codebase.")
 
+    # ---- intelligence layer --------------------------------------------
+    hotspots = m.get("complex_hotspots") or []
+    if hotspots:
+        worst = hotspots[0]
+        insights.append(
+            f"Top complexity hotspot: `{worst['name']}` ({worst['file']}, complexity {worst['complexity']})."
+        )
+        too_many_args = [h for h in hotspots if h.get("args", 0) > 5]
+        if too_many_args:
+            insights.append(f"{len(too_many_args)} function(s) take more than 5 parameters — consider parameter objects.")
+
+    doc_pct = m.get("documented_symbols_pct")
+    if doc_pct is not None:
+        if doc_pct >= 60:
+            insights.append(f"Good documentation coverage: {doc_pct:.0f}% of public symbols documented.")
+        elif doc_pct < 20:
+            insights.append(f"Only {doc_pct:.0f}% of public symbols are documented — adding docstrings would help a lot.")
+
+    todos = m.get("total_todos") or 0
+    if todos > 50:
+        insights.append(f"{todos} TODO/FIXME markers — schedule a cleanup sprint.")
+    elif todos > 0:
+        insights.append(f"{todos} TODO/FIXME marker(s) tracked in reports.")
+
+    endpoints = m.get("total_endpoints") or 0
+    if endpoints:
+        insights.append(f"HTTP API surface detected: {endpoints} endpoint(s) mapped in the report.")
+
     tests = s.architecture.get("Tests", [])
     if m["total_files"]:
         ratio = len(tests) / m["total_files"]
@@ -1668,6 +1710,23 @@ def dependencies_prompt_section(s: ProjectStructure) -> str:
     if s.dependencies.get("development"):
         secs.append("**Dev tools**: " + ", ".join(s.dependencies["development"][:6]))
     return "\n".join(secs) if secs else "No major dependencies detected."
+
+
+def endpoints_prompt_section(s: ProjectStructure) -> str:
+    endpoints = _project_endpoints(s)
+    if not endpoints:
+        return "_No HTTP endpoints detected._"
+    return "\n".join(f"- `{ep}`" for ep in endpoints[:40])
+
+
+def hotspots_prompt_section(s: ProjectStructure) -> str:
+    hotspots = s.metrics.get("complex_hotspots") or []
+    if not hotspots:
+        return "_No significant complexity hotspots detected._"
+    return "\n".join(
+        f"- `{h['name']}` in `{h['file']}` — complexity {h['complexity']}, {h.get('args', 0)} arg(s)"
+        for h in hotspots
+    )
 
 
 def language_prompt_section(s: ProjectStructure) -> str:
