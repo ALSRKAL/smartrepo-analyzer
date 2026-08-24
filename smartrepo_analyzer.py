@@ -1160,13 +1160,15 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
         self._render_png("architecture.mmd", "architecture.png")
 
     def _render_png(self, mmd_name: str, png_name: str):
-        if not tool_available("mmdc"):
+        from tool_runner import tool_path
+        mmdc = tool_path("mmdc")
+        if not mmdc:
             console.print("  ⚠ mermaid-cli not found — PNG rendering skipped "
                           "(npm i -g @mermaid-js/mermaid-cli)")
             return
         try:
             result = subprocess.run(
-                ["mmdc", "-i", str(self.output_dir / mmd_name),
+                [mmdc, "-i", str(self.output_dir / mmd_name),
                  "-o", str(self.output_dir / png_name), "-t", "neutral", "-b", "white"],
                 capture_output=True, text=True, timeout=120,
             )

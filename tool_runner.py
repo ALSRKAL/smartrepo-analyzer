@@ -10,8 +10,10 @@ large projects), tools are invoked once per *batch* of files.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence
 
@@ -22,14 +24,39 @@ DEFAULT_BATCH_SIZE = 64
 _TOOL_CACHE: dict = {}
 
 
+def _locate(name: str) -> Optional[str]:
+    """Find an executable on PATH or beside the running interpreter.
+
+    يبحث عن الأداة في PATH أولًا، ثم في مجلد مفسر بايثون الجاري —
+    بحيث تُكتشف الأدوات المثبتة في نفس البيئة الافتراضية حتى بدون تفعيلها.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    candidate = Path(sys.executable).parent / (
+        f"{name}.exe" if os.name == "nt" and not name.endswith(".exe") else name
+    )
+    try:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    except OSError:
+        pass
+    return None
+
+
 def tool_available(name: str) -> bool:
     """Return True if an executable exists (result cached).
 
     للتحقق من توفر أداة خارجية في النظام (مع تخزين النتيجة مؤقتًا).
     """
     if name not in _TOOL_CACHE:
-        _TOOL_CACHE[name] = shutil.which(name) is not None
+        _TOOL_CACHE[name] = _locate(name) is not None
     return _TOOL_CACHE[name]
+
+
+def tool_path(name: str) -> Optional[str]:
+    """Full path of the tool executable, or None when missing."""
+    return _locate(name)
 
 
 def reset_tool_cache() -> None:
@@ -40,11 +67,21 @@ def reset_tool_cache() -> None:
 def run_command(cmd: Sequence[str], timeout: int = 300) -> Optional[subprocess.CompletedProcess]:
     """Run a command safely; returns None when the executable is missing.
 
-    تنفيذ أمر خارجي بأمان مع مهلة زمنية، ويعيد None إذا كانت الأداة غير مثبتة.
+    The executable name is resolved against PATH *and* the running
+    interpreter's bin directory, so pip-installed analysis tools work even
+    when their virtualenv is not activated.
+
+    تنفيذ أمر خارجي بأمان مع مهلة زمنية، ويحل مسار الأداة تلقائيًا من
+    البيئة الافتراضية أو PATH. يعيد None إذا لم تُوجد الأداة.
     """
+    argv = list(cmd)
+    resolved = _locate(argv[0])
+    if resolved is None:
+        return None
+    argv[0] = resolved
     try:
         return subprocess.run(
-            list(cmd),
+            argv,
             capture_output=True,
             text=True,
             timeout=timeout,

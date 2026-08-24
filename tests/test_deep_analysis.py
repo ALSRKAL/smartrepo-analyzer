@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import textwrap
+from pathlib import Path
 
 from deep_analysis import parse_source
 
@@ -239,6 +241,70 @@ class TestTodosAndDocs:
         documented = '''/** Does the thing. */\nfunction doThing() {}\n'''
         p = parse_source(".js", "JavaScript", documented)
         assert p.functions_detail[0].documented is True
+
+
+class TestRadonParity:
+    """Lock in exact parity with radon (verified by cross-testing)."""
+
+    def test_comprehension_filter_counts(self):
+        p = parse_source(".py", "Python",
+                         "def f(items):\n    return [x for x in items if x]\n")
+        # base + generator + filter clause == radon's 3
+        assert p.functions_detail[0].complexity == 3
+
+    def test_assert_ignores_inner_boolops(self):
+        p = parse_source(".py", "Python", "def f(a, b):\n    assert a or b\n")
+        assert p.functions_detail[0].complexity == 2   # assert only, not `or`
+
+    def test_async_for_counts_async_with_does_not(self):
+        src = textwrap.dedent("""\
+            async def fetch(s):
+                async with s as t:
+                    async for chunk in t:
+                        yield chunk
+        """)
+        p = parse_source(".py", "Python", src)
+        assert p.functions_detail[0].complexity == 2   # base + async for
+
+    def test_match_cases_exclude_wildcard(self):
+        src = textwrap.dedent("""\
+            def f(x):
+                match x:
+                    case 1: return 1
+                    case 2: return 2
+                    case _: return 0
+        """)
+        p = parse_source(".py", "Python", src)
+        assert p.functions_detail[0].complexity == 3   # base + 2 non-wildcard cases
+
+
+class TestJsOperatorCounting:
+    def test_short_circuit_operators_count(self):
+        src = "function h(req, res){\n  const page = req.query.page || 1;\n}\n"
+        p = parse_source(".js", "JavaScript", src)
+        h = next(f for f in p.functions_detail if f.name == "h")
+        assert h.complexity == 2   # base + ||
+
+
+class TestDocstringFallback:
+    def test_first_symbol_docstring_surfaces(self):
+        src = "def greet(name):\n    \"\"\"مرحبًا بالعالم.\"\"\"\n    return name\n"
+        p = parse_source(".py", "Python", src)
+        assert "مرحبًا بالعالم" in p.docstring
+
+
+class TestToolPathResolution:
+    def test_finds_tool_beside_interpreter(self):
+        from tool_runner import tool_path, reset_tool_cache
+        reset_tool_cache()
+        py = tool_path("python" if os.name != "nt" else "python")
+        assert py is not None and Path(py).exists()
+
+    def test_run_command_resolves_venv_tools(self):
+        import sys as _sys
+        from tool_runner import run_command
+        proc = run_command([_sys.executable, "-c", "print('ok')"])
+        assert proc is not None and "ok" in proc.stdout
 
 
 class TestProjectIntegration:

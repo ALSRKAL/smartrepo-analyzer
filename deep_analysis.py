@@ -526,10 +526,13 @@ def _js_scan(lines: List[str], text: str) -> ParsedSource:
             ))
             break
 
-        # per-line decision attribution to the most recent function (heuristic)
+        # per-line decision attribution to the most recent function
+        # keywords + short-circuit operators (||, &&, ??) — matching radon/lizard
         clean = _strip_inline_comment(line, "//")
-        if result.functions_detail and re.search(r"\b(if|for|while|case|catch)\b", clean):
-            result.functions_detail[-1].complexity += 1
+        if result.functions_detail:
+            hits = re.findall(r"\b(?:if|for|while|case|catch)\b|\?\?|&&|\|\|", clean)
+            if hits:
+                result.functions_detail[-1].complexity += len(hits)
 
     result.imports = sorted(set(result.imports))
     result.endpoints = _extract_endpoints(text)
@@ -584,10 +587,24 @@ def _python_scan(content: str) -> ParsedSource:
     lines = content.splitlines()
     module_doc = ast.get_docstring(tree) or ""
 
+    # Decision nodes counted exactly like radon (verified by cross-testing):
+    #   If/For/While/AsyncFor/ExceptHandler/Assert/IfExp → +1
+    #   comprehension → +1 plus +1 per filter clause
+    #   BoolOp → +(values-1); NOT descended into when inside an `assert`
+    #   match → +1 per non-wildcard case
     decision_nodes = (
-        ast.If, ast.For, ast.While, ast.ExceptHandler,
-        ast.Assert, ast.IfExp, ast.comprehension,
+        ast.If, ast.For, ast.While, ast.AsyncFor,
+        ast.ExceptHandler, ast.Assert, ast.IfExp,
     )
+
+    def _is_wildcard_case(case_node) -> bool:
+        pat = getattr(case_node, "pattern", None)
+        return (
+            pat is not None
+            and pat.__class__.__name__ == "MatchAs"
+            and getattr(pat, "pattern", "sentinel") is None
+            and getattr(pat, "name", None) in (None, "_")
+        )
 
     def local_complexity(fn_node) -> int:
         score = 1
@@ -598,8 +615,17 @@ def _python_scan(content: str) -> ParsedSource:
                 continue
             if isinstance(node, decision_nodes):
                 score += 1
+                if isinstance(node, ast.Assert):
+                    continue  # radon ignores boolean ops inside assertions
+            elif isinstance(node, ast.comprehension):
+                # the generator itself + every filter clause counts (radon parity)
+                score += 1 + len(node.ifs)
             elif isinstance(node, ast.BoolOp):
                 score += max(len(node.values) - 1, 0)
+            elif node.__class__.__name__ == "Match":
+                score += sum(
+                    1 for cs in getattr(node, "cases", []) if not _is_wildcard_case(cs)
+                )
             stack.extend(ast.iter_child_nodes(node))
         return score
 
@@ -661,6 +687,16 @@ def _python_scan(content: str) -> ParsedSource:
 
     visit(tree)
     result.imports = sorted(import_set)
+    # prefer the module docstring; otherwise surface the first symbol's
+    # so every file summary carries meaningful context
+    if not module_doc:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef)):
+                doc = ast.get_docstring(node)
+                if doc:
+                    module_doc = doc
+                    break
     result.docstring = module_doc[:300]
     result.todos = _count_todos(content)
     return result.finalize()
